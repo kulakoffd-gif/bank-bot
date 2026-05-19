@@ -1,5 +1,6 @@
 {
   "seen_transactions": [
+    "114887",
     "129991",
     "129992",
     "129993",
@@ -35,8 +36,8 @@
     "66173",
     "66174"
   ],
-  "last_telegram_update_id": 673453964,
+  "last_telegram_update_id": 673453971,
   "is_paused": false,
-  "last_check_at": "2026-05-19T12:02:32.392349+00:00",
-  "last_check_result": "новых поступлений: 0"
+  "last_check_at": "2026-05-19T18:18:37.737483+00:00",
+  "last_check_result": "новых поступлений: 1"
 }
