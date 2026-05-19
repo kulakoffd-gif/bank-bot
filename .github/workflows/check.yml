@@ -63,6 +63,8 @@ jobs:
           path: |
             /tmp/*.html
             /tmp/*.png
+            /tmp/*.json
+            /tmp/*.txt
           if-no-files-found: ignore
           retention-days: 1
 

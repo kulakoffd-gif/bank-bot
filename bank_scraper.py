@@ -82,26 +82,46 @@ async def _do_scrape(
         log.error("Page content (first 500 chars): %s", html[:500])
         raise RuntimeError("Login failed — check BANK_LOGIN / BANK_PASSWORD secrets")
 
-    log.info("Logged in")
-    await page.screenshot(path="/tmp/01_home.png", full_page=True)
+    log.info("Logged in. Going to accounts page")
+    await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(3)
+    await page.screenshot(path="/tmp/01_accounts_default.png", full_page=True)
 
-    # Пробуем разные URL для основных счетов
-    candidate_urls = [
-        ("https://icb.asb.by/Accounts/Accounts",      "02a_accounts_accounts"),
-        ("https://icb.asb.by/",                        "02b_root"),
-        ("https://icb.asb.by/AisIdo/AisIdoView",       "02c_aisido"),
-    ]
-    for url, name in candidate_urls:
-        try:
-            log.info("Trying URL: %s", url)
-            await page.goto(url, wait_until="networkidle", timeout=20_000)
-            await asyncio.sleep(3)
-            log.info("  Final URL: %s", page.url)
-            await page.screenshot(path=f"/tmp/{name}.png", full_page=True)
-            with open(f"/tmp/{name}.html", "w", encoding="utf-8") as f:
-                f.write(await page.content())
-        except Exception as e:
-            log.warning("URL %s failed: %s", url, e)
+    # Получаем JSON-список типов счетов через тот же endpoint что использует фронт
+    log.info("Querying account types list via /Accounts/GetTypeAccounts")
+    try:
+        # выполним AJAX-запрос через JS в браузере (использует текущую сессию)
+        types_json = await page.evaluate("""async () => {
+            const r = await fetch('/Accounts/GetTypeAccounts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: ''
+            });
+            return await r.text();
+        }""")
+        with open("/tmp/account_types.json", "w", encoding="utf-8") as f:
+            f.write(types_json)
+        log.info("Account types saved (size=%d)", len(types_json))
+    except Exception as e:
+        log.warning("GetTypeAccounts failed: %s", e)
+
+    # Запрашиваем СПИСОК САМИХ СЧЕТОВ через AJAX endpoint
+    log.info("Querying full accounts list via JS fetch")
+    try:
+        accounts_json = await page.evaluate("""async () => {
+            // typical Kendo grid read endpoint - try common patterns
+            const r = await fetch('/Accounts/GetAccountBalances', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
+                body: ''
+            });
+            return r.status + ' :: ' + await r.text();
+        }""")
+        with open("/tmp/accounts_data.txt", "w", encoding="utf-8") as f:
+            f.write(accounts_json)
+        log.info("Accounts data: status+body saved (size=%d)", len(accounts_json))
+    except Exception as e:
+        log.warning("GetAccountBalances failed: %s", e)
 
     iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
     log.info("Target IBAN: %s", iban)
