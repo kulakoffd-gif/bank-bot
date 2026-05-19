@@ -129,10 +129,8 @@ async def _do_scrape(
     await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
     await asyncio.sleep(2)
 
-    # На время отладки берём год назад чтобы точно увидеть хоть какие-то платежи
-    debug_long_range = os.environ.get("DEBUG_LONG_RANGE") == "1"
-    if debug_long_range:
-        days_back = 365
+    # DEBUG: пока отладка — берём 90 дней назад чтобы точно увидеть хоть какие-то платежи
+    days_back = 90
     date_from = (date.today() - timedelta(days=days_back)).strftime("%d.%m.%Y")
     date_to   = date.today().strftime("%d.%m.%Y")
     log.info("Fetching payments for accountId=%s, period %s — %s", target_id, date_from, date_to)
