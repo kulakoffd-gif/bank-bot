@@ -124,36 +124,46 @@ async def _do_scrape(
         log.error("Target IBAN %s NOT found in account list!", iban_target)
         raise RuntimeError(f"IBAN {iban_target} not found in bank")
 
-    # Теперь идём на страницу входящих платежей с этим AccountId
-    inc_url = f"{INCOMING_PAYMENTS_URL}?accountId={target_id}"
-    log.info("Opening incoming payments: %s", inc_url)
-    await page.goto(inc_url, wait_until="networkidle", timeout=30_000)
-    await asyncio.sleep(3)
-    await page.screenshot(path="/tmp/02_incoming.png", full_page=True)
+    # Идём на страницу входящих платежей — нужна для куки / контекста
+    log.info("Opening IncomingPayments page (context only)")
+    await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(2)
 
-    # Читаем данные платежей из Kendo Grid памяти
-    payments_data = await page.evaluate("""() => {
-        const grids = document.querySelectorAll('[data-role="grid"]');
-        const result = {gridCount: grids.length, grids: []};
-        grids.forEach((el, i) => {
-            try {
-                const grid = $(el).data('kendoGrid');
-                if (grid && grid.dataSource) {
-                    const data = grid.dataSource.data();
-                    result.grids.push({
-                        index: i,
-                        count: data.length,
-                        first: data[0] ? JSON.parse(JSON.stringify(data[0])) : null,
-                        all: data.map(r => JSON.parse(JSON.stringify(r))),
-                    });
-                }
-            } catch (e) { result.grids.push({index: i, error: e.message}); }
+    # Запрос платежей напрямую через AJAX endpoint с правильными параметрами
+    date_from = (date.today() - timedelta(days=days_back)).strftime("%d.%m.%Y")
+    date_to   = date.today().strftime("%d.%m.%Y")
+    log.info("Fetching payments for accountId=%s, period %s — %s", target_id, date_from, date_to)
+
+    js_fetch_payments = """async (accountId, dateFrom, dateTo) => {
+        // Стандартные параметры Kendo Grid + AccountId + диапазон дат
+        const params = new URLSearchParams();
+        params.append('AccountId', accountId);
+        params.append('dateFrom', dateFrom);
+        params.append('dateTo', dateTo);
+        params.append('DateFrom', dateFrom);
+        params.append('DateTo', dateTo);
+        params.append('page', '1');
+        params.append('pageSize', '100');
+        params.append('skip', '0');
+        params.append('take', '100');
+
+        const r = await fetch('/Accounts/ReadPayments', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+            },
+            body: params.toString(),
+            credentials: 'include',
         });
-        return JSON.stringify(result);
-    }""")
-    with open("/tmp/payments_data.json", "w", encoding="utf-8") as f:
-        f.write(payments_data)
-    log.info("Payments data captured (size=%d)", len(payments_data))
+        const text = await r.text();
+        return r.status + ' :: ' + text;
+    }"""
+    raw = await page.evaluate(js_fetch_payments, target_id, date_from, date_to)
+    with open("/tmp/read_payments_response.txt", "w", encoding="utf-8") as f:
+        f.write(raw)
+    log.info("ReadPayments response (size=%d): %s", len(raw), raw[:300])
 
     # на этом этапе нужны точные селекторы конкретного интерфейса банка.
     # пока возвращаем заглушку, чтобы воркфлоу не падал — допишем после
