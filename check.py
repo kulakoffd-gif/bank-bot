@@ -79,16 +79,32 @@ async def do_bank_check(st: dict) -> str:
         telegram_io.send(msg)
         return f"ошибка: {exc}"
 
+    # На самом первом запуске (seen_transactions пуст) — не спамим уведомлениями
+    # обо всех старых платежах. Просто помечаем их как уже виденные.
+    is_first_run = len(st["seen_transactions"]) == 0
     new_count = 0
     seen = set(st["seen_transactions"])
+
     for tx in transactions:
         if not tx.transaction_id or tx.transaction_id in seen:
             continue
-        telegram_io.send(format_payment(tx))
+        if is_first_run:
+            log.info("Initial run: marking %s as seen (no notification)", tx.transaction_id)
+        else:
+            telegram_io.send(format_payment(tx))
+            new_count += 1
         seen.add(tx.transaction_id)
-        new_count += 1
 
     st["seen_transactions"] = sorted(seen)
+
+    if is_first_run and transactions:
+        telegram_io.send(
+            f"✅ Бот запущен и подключился к счёту.\n"
+            f"Найдено {len(transactions)} ранее прошедших поступлений — отмечены как «уже учтённые», "
+            f"уведомлений по ним не будет.\n\n"
+            f"О каждом <b>новом</b> поступлении пришлю отдельное сообщение."
+        )
+
     return f"новых поступлений: {new_count}"
 
 

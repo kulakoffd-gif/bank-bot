@@ -199,7 +199,6 @@ async def _do_scrape(
                 currency=r.get("IsoOfTransfer", "BYN"),
                 counterparty=(r.get("PayerName") or "").strip() or "Неизвестно",
                 purpose=(r.get("DetPay") or "").strip() or "—",
-                direction="CRDT",
             )
             incoming.append(tx)
 
