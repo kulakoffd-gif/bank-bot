@@ -129,8 +129,8 @@ async def _do_scrape(
     await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
     await asyncio.sleep(2)
 
-    # DEBUG: пока отладка — берём 90 дней назад чтобы точно увидеть хоть какие-то платежи
-    days_back = 90
+    # Расширяем диапазон чтобы первый запуск увидел недавние платежи (потом фильтр по seen_transactions)
+    days_back = max(days_back, 7)
     # Формат банка: MM/dd/yyyy HH:mm:ss (US-style)
     date_from = (date.today() - timedelta(days=days_back)).strftime("%m/%d/%Y 00:00:00")
     date_to   = date.today().strftime("%m/%d/%Y 23:59:59")
@@ -168,20 +168,47 @@ async def _do_scrape(
         js_fetch_payments,
         {"accountId": target_id, "firstDate": date_from, "lastDate": date_to},
     )
-    with open("/tmp/read_payments_response.txt", "w", encoding="utf-8") as f:
-        f.write(raw)
-    log.info("ReadPayments response (size=%d): %s", len(raw), raw[:300])
+    # ответ имеет формат "200 :: {json}" — отрезаем префикс
+    if " :: " in raw:
+        status_str, json_str = raw.split(" :: ", 1)
+        log.info("ReadPayments HTTP %s, body size=%d", status_str, len(json_str))
+    else:
+        log.error("Unexpected response format: %s", raw[:200])
+        return []
 
-    # на этом этапе нужны точные селекторы конкретного интерфейса банка.
-    # пока возвращаем заглушку, чтобы воркфлоу не падал — допишем после
-    # первого реального теста, когда увидим HTML страницы выписки.
-    transactions = await _parse_statements(page, days_back)
-    log.info("Parsed %d incoming transactions", len(transactions))
-    return transactions
+    try:
+        data = json.loads(json_str)
+    except Exception as exc:
+        log.error("Failed to parse JSON: %s\nRaw: %s", exc, json_str[:500])
+        return []
+
+    records = data.get("Data") or []
+    log.info("Total records returned: %d (Total field=%s)", len(records), data.get("Total"))
+
+    # Фильтруем только входящие — те, где BeneficiaryAccount == наш счёт
+    our_iban_compact = iban_target  # уже без пробелов
+    incoming = []
+    for r in records:
+        beneficiary_acc = (r.get("BeneficiaryAccount") or "").replace(" ", "")
+        # это входящий если: получатель = мы, отправитель = не мы
+        if beneficiary_acc == our_iban_compact:
+            tx = Transaction(
+                transaction_id=str(r.get("Id") or ""),
+                booking_date=r.get("DateOperation", "")[:10],
+                amount=str(r.get("AmountOfTransfer") or r.get("Debit") or "?"),
+                currency=r.get("IsoOfTransfer", "BYN"),
+                counterparty=(r.get("PayerName") or "").strip() or "Неизвестно",
+                purpose=(r.get("DetPay") or "").strip() or "—",
+                direction="CRDT",
+            )
+            incoming.append(tx)
+
+    log.info("Filtered to %d INCOMING transactions", len(incoming))
+    return incoming
 
 
-async def _parse_statements(page: Page, days_back: int) -> list[Transaction]:
-    """Stub — to be completed after seeing the real statements page HTML."""
+async def _parse_statements_unused(page: Page, days_back: int) -> list[Transaction]:
+    """Stub kept for reference, no longer called."""
     # сохраняем HTML страницы в репо для отладки (через Actions artifact)
     html = await page.content()
     debug_path = "/tmp/statements_page.html"
