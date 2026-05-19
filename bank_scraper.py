@@ -82,6 +82,10 @@ async def _do_scrape(
         raise RuntimeError("Login failed — check BANK_LOGIN / BANK_PASSWORD secrets")
 
     log.info("Logged in. Opening statements")
+    # сохраняем главную страницу после логина — нужно понять структуру меню
+    with open("/tmp/post_login_page.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+
     await page.goto(STATEMENTS_URL, wait_until="networkidle", timeout=30_000)
 
     # на этом этапе нужны точные селекторы конкретного интерфейса банка.

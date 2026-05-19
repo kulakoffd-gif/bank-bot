@@ -55,6 +55,17 @@ jobs:
           BANK_ACCOUNT_IBAN:  ${{ secrets.BANK_ACCOUNT_IBAN }}
         run: python check.py
 
+      - name: Upload debug HTML (statements page)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: statements-debug
+          path: |
+            /tmp/statements_page.html
+            /tmp/post_login_page.html
+          if-no-files-found: ignore
+          retention-days: 1
+
       - name: Commit updated state
         run: |
           git config user.name  "bank-bot"
