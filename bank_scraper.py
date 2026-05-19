@@ -108,25 +108,37 @@ async def _do_scrape(
     with open("/tmp/01_checking_accounts.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
-    # Парсим IBAN'ы из DOM прямо из браузера
-    log.info("Extracting IBAN list from rendered grid")
+    # Читаем данные прямо из памяти Kendo Grid (он хранит весь список)
+    log.info("Extracting full data from Kendo Grid memory")
     try:
-        rows_data = await page.evaluate("""() => {
-            const rows = document.querySelectorAll('tr[role="row"]');
-            const out = [];
-            for (const r of rows) {
-                const cells = r.querySelectorAll('td');
-                if (cells.length === 0) continue;
-                const cellTexts = Array.from(cells).map(c => c.innerText.trim());
-                out.push(cellTexts);
-            }
-            return JSON.stringify(out);
+        grid_data = await page.evaluate("""() => {
+            // ищем все экземпляры kendoGrid на странице
+            const grids = document.querySelectorAll('[data-role="grid"]');
+            const result = {gridCount: grids.length, items: []};
+            grids.forEach((el, i) => {
+                try {
+                    const grid = $(el).data('kendoGrid');
+                    if (grid && grid.dataSource) {
+                        const data = grid.dataSource.data();
+                        result.items.push({
+                            gridIndex: i,
+                            elementId: el.id || null,
+                            recordCount: data.length,
+                            firstRecord: data[0] ? JSON.parse(JSON.stringify(data[0])) : null,
+                            allRecords: data.map(r => JSON.parse(JSON.stringify(r))),
+                        });
+                    }
+                } catch(e) {
+                    result.items.push({gridIndex: i, error: e.message});
+                }
+            });
+            return JSON.stringify(result, null, 2);
         }""")
-        with open("/tmp/grid_rows.json", "w", encoding="utf-8") as f:
-            f.write(rows_data)
-        log.info("Grid rows extracted (size=%d)", len(rows_data))
+        with open("/tmp/kendo_grid_data.json", "w", encoding="utf-8") as f:
+            f.write(grid_data)
+        log.info("Kendo grid data extracted (size=%d)", len(grid_data))
     except Exception as e:
-        log.warning("Row extraction failed: %s", e)
+        log.warning("Kendo extraction failed: %s", e)
 
     iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
     log.info("Target IBAN: %s", iban)
