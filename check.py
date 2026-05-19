@@ -130,14 +130,28 @@ async def main() -> int:
         state.mark_check(st, "пропущено (на паузе)")
 
     if pending.get("show_last"):
-        if st["seen_transactions"]:
-            last_ids = st["seen_transactions"][-10:]
-            telegram_io.send(
-                f"Последние ID учтённых поступлений ({len(last_ids)}):\n"
-                + "\n".join(f"• <code>{i}</code>" for i in last_ids)
-            )
-        else:
-            telegram_io.send("Учтённых поступлений пока нет.")
+        # Загружаем фактические последние поступления с банка
+        try:
+            from bank_scraper import fetch_incoming_transactions
+            recent = await fetch_incoming_transactions(days_back=30)
+            recent = sorted(recent, key=lambda t: t.booking_date, reverse=True)[:10]
+            if not recent:
+                telegram_io.send("За последние 30 дней поступлений не было.")
+            else:
+                lines = [f"<b>Последние {len(recent)} поступлений за 30 дней:</b>\n"]
+                for t in recent:
+                    lines.append(
+                        f"📅 <b>{t.booking_date}</b>  💰 <b>{t.amount} {t.currency}</b>\n"
+                        f"<b>От:</b> {t.counterparty}\n"
+                        f"<i>{t.purpose[:200]}</i>\n"
+                    )
+                # Telegram максимум 4096 символов на сообщение, нарезаем если длинно
+                full = "\n".join(lines)
+                for chunk_start in range(0, len(full), 3800):
+                    telegram_io.send(full[chunk_start:chunk_start + 3800])
+        except Exception as exc:
+            log.exception("/last failed")
+            telegram_io.send(f"❌ Ошибка при загрузке выписки:\n<code>{exc}</code>")
 
     state.save(st)
     log.info("Done. Result: %s", st["last_check_result"])
