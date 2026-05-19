@@ -9,6 +9,7 @@ all selector strings are gathered at the top of this file for easy tweaking.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -86,62 +87,73 @@ async def _do_scrape(
     await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
     await asyncio.sleep(3)
 
-    # Переключаем фильтр на "Текущий (расчётный)" — TypeAccountID=1
-    log.info("Saving filter TypeAccountID=1 (Текущий расчётный)")
-    try:
-        save_result = await page.evaluate("""async () => {
-            const r = await fetch('/Accounts/SaveGridTypeFilter', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
-                body: 'typeId=1'
-            });
-            return r.status + ' :: ' + await r.text();
-        }""")
-        log.info("SaveGridTypeFilter result: %s", save_result[:200])
-    except Exception as e:
-        log.warning("SaveGridTypeFilter failed: %s", e)
+    # Получаем полный список счетов из памяти Kendo Grid и находим наш по IBAN
+    iban_target = os.environ.get("BANK_ACCOUNT_IBAN", "").replace(" ", "")
+    log.info("Target IBAN (no spaces): %s", iban_target)
 
-    # Перезагружаем страницу и делаем скриншот
-    await page.reload(wait_until="networkidle", timeout=30_000)
-    await asyncio.sleep(4)
-    await page.screenshot(path="/tmp/01_checking_accounts.png", full_page=True)
-    with open("/tmp/01_checking_accounts.html", "w", encoding="utf-8") as f:
-        f.write(await page.content())
-
-    # Читаем данные прямо из памяти Kendo Grid (он хранит весь список)
-    log.info("Extracting full data from Kendo Grid memory")
-    try:
-        grid_data = await page.evaluate("""() => {
-            // ищем все экземпляры kendoGrid на странице
-            const grids = document.querySelectorAll('[data-role="grid"]');
-            const result = {gridCount: grids.length, items: []};
-            grids.forEach((el, i) => {
-                try {
-                    const grid = $(el).data('kendoGrid');
-                    if (grid && grid.dataSource) {
-                        const data = grid.dataSource.data();
-                        result.items.push({
-                            gridIndex: i,
-                            elementId: el.id || null,
-                            recordCount: data.length,
-                            firstRecord: data[0] ? JSON.parse(JSON.stringify(data[0])) : null,
-                            allRecords: data.map(r => JSON.parse(JSON.stringify(r))),
-                        });
-                    }
-                } catch(e) {
-                    result.items.push({gridIndex: i, error: e.message});
+    accounts_list = await page.evaluate("""() => {
+        const grids = document.querySelectorAll('[data-role="grid"]');
+        for (const el of grids) {
+            const grid = $(el).data('kendoGrid');
+            if (grid && grid.dataSource) {
+                const data = grid.dataSource.data();
+                if (data.length > 5) {  // основной грид со счетами
+                    return JSON.stringify(data.map(r => ({
+                        id: r.ID,
+                        iban: r.AccountIban,
+                        type: r.TypeAccountID,
+                        balance: r.Balance,
+                    })));
                 }
-            });
-            return JSON.stringify(result, null, 2);
-        }""")
-        with open("/tmp/kendo_grid_data.json", "w", encoding="utf-8") as f:
-            f.write(grid_data)
-        log.info("Kendo grid data extracted (size=%d)", len(grid_data))
-    except Exception as e:
-        log.warning("Kendo extraction failed: %s", e)
+            }
+        }
+        return "[]";
+    }""")
+    accounts = json.loads(accounts_list)
+    log.info("Got %d accounts from grid", len(accounts))
 
-    iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
-    log.info("Target IBAN: %s", iban)
+    target_id = None
+    for acc in accounts:
+        if acc["iban"] and acc["iban"].replace(" ", "") == iban_target:
+            target_id = acc["id"]
+            log.info("Match found! AccountID=%s, IBAN=%s, balance=%s",
+                     target_id, acc["iban"], acc["balance"])
+            break
+
+    if not target_id:
+        log.error("Target IBAN %s NOT found in account list!", iban_target)
+        raise RuntimeError(f"IBAN {iban_target} not found in bank")
+
+    # Теперь идём на страницу входящих платежей с этим AccountId
+    inc_url = f"{INCOMING_PAYMENTS_URL}?accountId={target_id}"
+    log.info("Opening incoming payments: %s", inc_url)
+    await page.goto(inc_url, wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(3)
+    await page.screenshot(path="/tmp/02_incoming.png", full_page=True)
+
+    # Читаем данные платежей из Kendo Grid памяти
+    payments_data = await page.evaluate("""() => {
+        const grids = document.querySelectorAll('[data-role="grid"]');
+        const result = {gridCount: grids.length, grids: []};
+        grids.forEach((el, i) => {
+            try {
+                const grid = $(el).data('kendoGrid');
+                if (grid && grid.dataSource) {
+                    const data = grid.dataSource.data();
+                    result.grids.push({
+                        index: i,
+                        count: data.length,
+                        first: data[0] ? JSON.parse(JSON.stringify(data[0])) : null,
+                        all: data.map(r => JSON.parse(JSON.stringify(r))),
+                    });
+                }
+            } catch (e) { result.grids.push({index: i, error: e.message}); }
+        });
+        return JSON.stringify(result);
+    }""")
+    with open("/tmp/payments_data.json", "w", encoding="utf-8") as f:
+        f.write(payments_data)
+    log.info("Payments data captured (size=%d)", len(payments_data))
 
     # на этом этапе нужны точные селекторы конкретного интерфейса банка.
     # пока возвращаем заглушку, чтобы воркфлоу не падал — допишем после
