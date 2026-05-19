@@ -82,28 +82,29 @@ async def _do_scrape(
         log.error("Page content (first 500 chars): %s", html[:500])
         raise RuntimeError("Login failed — check BANK_LOGIN / BANK_PASSWORD secrets")
 
-    log.info("Logged in. Taking screenshot of home page")
+    log.info("Logged in")
     await page.screenshot(path="/tmp/01_home.png", full_page=True)
 
-    log.info("Opening accounts page (/)")
-    await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
-    await asyncio.sleep(3)
-    await page.screenshot(path="/tmp/02_accounts.png", full_page=True)
+    # Пробуем разные URL для основных счетов
+    candidate_urls = [
+        ("https://icb.asb.by/Accounts/Accounts",      "02a_accounts_accounts"),
+        ("https://icb.asb.by/",                        "02b_root"),
+        ("https://icb.asb.by/AisIdo/AisIdoView",       "02c_aisido"),
+    ]
+    for url, name in candidate_urls:
+        try:
+            log.info("Trying URL: %s", url)
+            await page.goto(url, wait_until="networkidle", timeout=20_000)
+            await asyncio.sleep(3)
+            log.info("  Final URL: %s", page.url)
+            await page.screenshot(path=f"/tmp/{name}.png", full_page=True)
+            with open(f"/tmp/{name}.html", "w", encoding="utf-8") as f:
+                f.write(await page.content())
+        except Exception as e:
+            log.warning("URL %s failed: %s", url, e)
 
-    # пробуем найти и кликнуть на наш IBAN/счёт
     iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
-    iban_no_spaces = iban.replace(" ", "")
-    account_number = iban_no_spaces[8:] if len(iban_no_spaces) >= 28 else ""
-    log.info("Looking for our account: IBAN=%s, number=%s", iban_no_spaces, account_number)
-
-    log.info("Opening IncomingPayments page")
-    await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
-    await asyncio.sleep(3)
-    log.info("IncomingPayments URL=%s", page.url)
-    await page.screenshot(path="/tmp/03_incoming_initial.png", full_page=True)
-
-    with open("/tmp/incoming_payments_page.html", "w", encoding="utf-8") as f:
-        f.write(await page.content())
+    log.info("Target IBAN: %s", iban)
 
     # на этом этапе нужны точные селекторы конкретного интерфейса банка.
     # пока возвращаем заглушку, чтобы воркфлоу не падал — допишем после
