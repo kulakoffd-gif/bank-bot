@@ -85,43 +85,48 @@ async def _do_scrape(
     log.info("Logged in. Going to accounts page")
     await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
     await asyncio.sleep(3)
-    await page.screenshot(path="/tmp/01_accounts_default.png", full_page=True)
 
-    # Получаем JSON-список типов счетов через тот же endpoint что использует фронт
-    log.info("Querying account types list via /Accounts/GetTypeAccounts")
+    # Переключаем фильтр на "Текущий (расчётный)" — TypeAccountID=1
+    log.info("Saving filter TypeAccountID=1 (Текущий расчётный)")
     try:
-        # выполним AJAX-запрос через JS в браузере (использует текущую сессию)
-        types_json = await page.evaluate("""async () => {
-            const r = await fetch('/Accounts/GetTypeAccounts', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: ''
-            });
-            return await r.text();
-        }""")
-        with open("/tmp/account_types.json", "w", encoding="utf-8") as f:
-            f.write(types_json)
-        log.info("Account types saved (size=%d)", len(types_json))
-    except Exception as e:
-        log.warning("GetTypeAccounts failed: %s", e)
-
-    # Запрашиваем СПИСОК САМИХ СЧЕТОВ через AJAX endpoint
-    log.info("Querying full accounts list via JS fetch")
-    try:
-        accounts_json = await page.evaluate("""async () => {
-            // typical Kendo grid read endpoint - try common patterns
-            const r = await fetch('/Accounts/GetAccountBalances', {
+        save_result = await page.evaluate("""async () => {
+            const r = await fetch('/Accounts/SaveGridTypeFilter', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest'},
-                body: ''
+                body: 'typeId=1'
             });
             return r.status + ' :: ' + await r.text();
         }""")
-        with open("/tmp/accounts_data.txt", "w", encoding="utf-8") as f:
-            f.write(accounts_json)
-        log.info("Accounts data: status+body saved (size=%d)", len(accounts_json))
+        log.info("SaveGridTypeFilter result: %s", save_result[:200])
     except Exception as e:
-        log.warning("GetAccountBalances failed: %s", e)
+        log.warning("SaveGridTypeFilter failed: %s", e)
+
+    # Перезагружаем страницу и делаем скриншот
+    await page.reload(wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(4)
+    await page.screenshot(path="/tmp/01_checking_accounts.png", full_page=True)
+    with open("/tmp/01_checking_accounts.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+
+    # Парсим IBAN'ы из DOM прямо из браузера
+    log.info("Extracting IBAN list from rendered grid")
+    try:
+        rows_data = await page.evaluate("""() => {
+            const rows = document.querySelectorAll('tr[role="row"]');
+            const out = [];
+            for (const r of rows) {
+                const cells = r.querySelectorAll('td');
+                if (cells.length === 0) continue;
+                const cellTexts = Array.from(cells).map(c => c.innerText.trim());
+                out.push(cellTexts);
+            }
+            return JSON.stringify(out);
+        }""")
+        with open("/tmp/grid_rows.json", "w", encoding="utf-8") as f:
+            f.write(rows_data)
+        log.info("Grid rows extracted (size=%d)", len(rows_data))
+    except Exception as e:
+        log.warning("Row extraction failed: %s", e)
 
     iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
     log.info("Target IBAN: %s", iban)
