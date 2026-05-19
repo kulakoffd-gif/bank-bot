@@ -134,8 +134,7 @@ async def _do_scrape(
     date_to   = date.today().strftime("%d.%m.%Y")
     log.info("Fetching payments for accountId=%s, period %s — %s", target_id, date_from, date_to)
 
-    js_fetch_payments = """async (accountId, dateFrom, dateTo) => {
-        // Стандартные параметры Kendo Grid + AccountId + диапазон дат
+    js_fetch_payments = """async ({accountId, dateFrom, dateTo}) => {
         const params = new URLSearchParams();
         params.append('AccountId', accountId);
         params.append('dateFrom', dateFrom);
@@ -160,7 +159,10 @@ async def _do_scrape(
         const text = await r.text();
         return r.status + ' :: ' + text;
     }"""
-    raw = await page.evaluate(js_fetch_payments, target_id, date_from, date_to)
+    raw = await page.evaluate(
+        js_fetch_payments,
+        {"accountId": target_id, "dateFrom": date_from, "dateTo": date_to},
+    )
     with open("/tmp/read_payments_response.txt", "w", encoding="utf-8") as f:
         f.write(raw)
     log.info("ReadPayments response (size=%d): %s", len(raw), raw[:300])
