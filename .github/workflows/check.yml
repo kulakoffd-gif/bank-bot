@@ -61,10 +61,8 @@ jobs:
         with:
           name: statements-debug
           path: |
-            /tmp/statements_page.html
-            /tmp/post_login_page.html
-            /tmp/accounts_page.html
-            /tmp/incoming_payments_page.html
+            /tmp/*.html
+            /tmp/*.png
           if-no-files-found: ignore
           retention-days: 1
 

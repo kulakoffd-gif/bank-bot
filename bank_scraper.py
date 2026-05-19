@@ -82,13 +82,26 @@ async def _do_scrape(
         log.error("Page content (first 500 chars): %s", html[:500])
         raise RuntimeError("Login failed — check BANK_LOGIN / BANK_PASSWORD secrets")
 
-    log.info("Logged in. Opening IncomingPayments page")
-    await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
-    # подождём немного на тот случай если Kendo Grid догружает данные
-    await asyncio.sleep(2)
-    log.info("IncomingPayments URL=%s", page.url)
+    log.info("Logged in. Taking screenshot of home page")
+    await page.screenshot(path="/tmp/01_home.png", full_page=True)
 
-    # сохраним обе версии — обычный content и полный после JS
+    log.info("Opening accounts page (/)")
+    await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(3)
+    await page.screenshot(path="/tmp/02_accounts.png", full_page=True)
+
+    # пробуем найти и кликнуть на наш IBAN/счёт
+    iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
+    iban_no_spaces = iban.replace(" ", "")
+    account_number = iban_no_spaces[8:] if len(iban_no_spaces) >= 28 else ""
+    log.info("Looking for our account: IBAN=%s, number=%s", iban_no_spaces, account_number)
+
+    log.info("Opening IncomingPayments page")
+    await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(3)
+    log.info("IncomingPayments URL=%s", page.url)
+    await page.screenshot(path="/tmp/03_incoming_initial.png", full_page=True)
+
     with open("/tmp/incoming_payments_page.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
