@@ -1,0 +1,68 @@
+name: Bank check
+
+on:
+  schedule:
+    # каждые 15 минут с 5:00 до 13:59 UTC (= 8:00–16:59 МСК) пн-пт
+    - cron: '*/15 5-13 * * 1-5'
+  workflow_dispatch:  # ручной запуск кнопкой "Run workflow" на GitHub
+
+permissions:
+  contents: write   # для коммита обновлённого state.json
+
+concurrency:
+  group: bank-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium
+
+      - name: Install Playwright browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium --with-deps
+
+      - name: Install Playwright system deps (if cached)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: python -m playwright install-deps chromium
+
+      - name: Run bank check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          BANK_LOGIN:         ${{ secrets.BANK_LOGIN }}
+          BANK_PASSWORD:      ${{ secrets.BANK_PASSWORD }}
+          BANK_ACCOUNT_IBAN:  ${{ secrets.BANK_ACCOUNT_IBAN }}
+        run: python check.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name  "bank-bot"
+          git config user.email "bank-bot@users.noreply.github.com"
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "No state changes"
+          else
+            git commit -m "state: update [skip ci]"
+            git push
+          fi
