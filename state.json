@@ -2,6 +2,6 @@
   "seen_transactions": [],
   "last_telegram_update_id": 0,
   "is_paused": false,
-  "last_check_at": null,
-  "last_check_result": null
+  "last_check_at": "2026-05-19T10:47:29.875230+00:00",
+  "last_check_result": "новых поступлений: 0"
 }
