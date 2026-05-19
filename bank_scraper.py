@@ -131,30 +131,34 @@ async def _do_scrape(
 
     # DEBUG: пока отладка — берём 90 дней назад чтобы точно увидеть хоть какие-то платежи
     days_back = 90
-    date_from = (date.today() - timedelta(days=days_back)).strftime("%d.%m.%Y")
-    date_to   = date.today().strftime("%d.%m.%Y")
-    log.info("Fetching payments for accountId=%s, period %s — %s", target_id, date_from, date_to)
+    # Формат банка: MM/dd/yyyy HH:mm:ss (US-style)
+    date_from = (date.today() - timedelta(days=days_back)).strftime("%m/%d/%Y 00:00:00")
+    date_to   = date.today().strftime("%m/%d/%Y 23:59:59")
+    log.info("Fetching payments for AccountId=%s, FirstDate=%s, LastDate=%s",
+             target_id, date_from, date_to)
 
-    js_fetch_payments = """async ({accountId, dateFrom, dateTo}) => {
-        const params = new URLSearchParams();
-        params.append('AccountId', accountId);
-        params.append('dateFrom', dateFrom);
-        params.append('dateTo', dateTo);
-        params.append('DateFrom', dateFrom);
-        params.append('DateTo', dateTo);
-        params.append('page', '1');
-        params.append('pageSize', '100');
-        params.append('skip', '0');
-        params.append('take', '100');
+    js_fetch_payments = """async ({accountId, firstDate, lastDate}) => {
+        // Параметры идут в URL (как делает сам Kendo Grid)
+        const qs = new URLSearchParams();
+        qs.append('AccountId', accountId);
+        qs.append('FirstDate', firstDate);
+        qs.append('LastDate', lastDate);
 
-        const r = await fetch('/Accounts/ReadPayments', {
+        // Тело — стандартные пагинационные параметры Kendo
+        const body = new URLSearchParams();
+        body.append('page', '1');
+        body.append('pageSize', '100');
+        body.append('skip', '0');
+        body.append('take', '100');
+
+        const r = await fetch('/Accounts/ReadPayments?' + qs.toString(), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'X-Requested-With': 'XMLHttpRequest',
                 'Accept': 'application/json',
             },
-            body: params.toString(),
+            body: body.toString(),
             credentials: 'include',
         });
         const text = await r.text();
@@ -162,7 +166,7 @@ async def _do_scrape(
     }"""
     raw = await page.evaluate(
         js_fetch_payments,
-        {"accountId": target_id, "dateFrom": date_from, "dateTo": date_to},
+        {"accountId": target_id, "firstDate": date_from, "lastDate": date_to},
     )
     with open("/tmp/read_payments_response.txt", "w", encoding="utf-8") as f:
         f.write(raw)
