@@ -138,18 +138,19 @@ async def _do_scrape(
              target_id, date_from, date_to)
 
     js_fetch_payments = """async ({accountId, firstDate, lastDate}) => {
-        // Параметры идут в URL (как делает сам Kendo Grid)
         const qs = new URLSearchParams();
         qs.append('AccountId', accountId);
         qs.append('FirstDate', firstDate);
         qs.append('LastDate', lastDate);
 
-        // Тело — стандартные пагинационные параметры Kendo
+        // Большая страница + сортировка по дате убыванию (новые первыми)
         const body = new URLSearchParams();
         body.append('page', '1');
-        body.append('pageSize', '100');
+        body.append('pageSize', '500');
         body.append('skip', '0');
-        body.append('take', '100');
+        body.append('take', '500');
+        body.append('sort[0].field', 'DateOperation');
+        body.append('sort[0].dir', 'desc');
 
         const r = await fetch('/Accounts/ReadPayments?' + qs.toString(), {
             method: 'POST',
