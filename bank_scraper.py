@@ -21,15 +21,7 @@ log = logging.getLogger(__name__)
 
 LOGIN_URL = "https://icb.asb.by/Login/Index"
 ACCOUNTS_URL = "https://icb.asb.by/"
-# Возможные пути к выписке (проверим по очереди какой работает)
-CANDIDATE_STATEMENT_PATHS = [
-    "/Accounts/Statement",
-    "/Accounts/ViewStatement",
-    "/AccountStatement",
-    "/Operation/ViewDocuments",
-    "/Operations/ViewDocuments",
-    "/Statement/View",
-]
+INCOMING_PAYMENTS_URL = "https://icb.asb.by/Accounts/IncomingPayments"
 
 # --- селекторы (правим после первого запуска, если структура страницы другая) ---
 SEL_LOGIN_INPUT    = 'input[name="Login"], input[type="text"]'
@@ -90,32 +82,15 @@ async def _do_scrape(
         log.error("Page content (first 500 chars): %s", html[:500])
         raise RuntimeError("Login failed — check BANK_LOGIN / BANK_PASSWORD secrets")
 
-    log.info("Logged in. Opening accounts page (/)")
-    await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
-    # дамп страницы счетов
-    with open("/tmp/accounts_page.html", "w", encoding="utf-8") as f:
+    log.info("Logged in. Opening IncomingPayments page")
+    await page.goto(INCOMING_PAYMENTS_URL, wait_until="networkidle", timeout=30_000)
+    # подождём немного на тот случай если Kendo Grid догружает данные
+    await asyncio.sleep(2)
+    log.info("IncomingPayments URL=%s", page.url)
+
+    # сохраним обе версии — обычный content и полный после JS
+    with open("/tmp/incoming_payments_page.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
-    log.info("Accounts page URL=%s", page.url)
-
-    # пробуем каждый кандидат для страницы выписки
-    statement_url = None
-    for path in CANDIDATE_STATEMENT_PATHS:
-        url = f"https://icb.asb.by{path}"
-        log.info("Trying statement path: %s", url)
-        try:
-            await page.goto(url, wait_until="networkidle", timeout=15_000)
-            content = await page.content()
-            if "404" not in content[:1000] and "Указанной страницы нет" not in content:
-                log.info("Path %s seems to work (URL=%s)", path, page.url)
-                with open("/tmp/statement_page.html", "w", encoding="utf-8") as f:
-                    f.write(content)
-                statement_url = url
-                break
-        except Exception as e:
-            log.info("Path %s failed: %s", path, e)
-
-    if not statement_url:
-        log.warning("No statement path worked, falling back to accounts page dump")
 
     # на этом этапе нужны точные селекторы конкретного интерфейса банка.
     # пока возвращаем заглушку, чтобы воркфлоу не падал — допишем после
