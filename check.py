@@ -4,10 +4,14 @@ import asyncio
 import logging
 import re
 import sys
+from datetime import datetime, timezone
 
 import state
 import telegram_io
 from bank_scraper import fetch_incoming_transactions, Transaction
+
+# Минимальный интервал между обращениями к банку (минут)
+BANK_CHECK_INTERVAL_MIN = 14
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +94,20 @@ WELCOME_TEXT = (
 def _parse_int_arg(args: str) -> int | None:
     m = re.search(r"-?\d+", args.strip())
     return int(m.group(0)) if m else None
+
+
+def _minutes_since(iso_str: str | None) -> float | None:
+    """Сколько минут прошло с момента iso_str (UTC). None если нет данных."""
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - dt
+        return delta.total_seconds() / 60
+    except Exception:
+        return None
 
 
 def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) -> None:
@@ -309,15 +327,26 @@ async def main() -> int:
 
     handle_commands(commands, st, pending)
 
-    should_check = not st["is_paused"] or pending.get("force_check")
-    if should_check:
-        log.info("Running bank check (paused=%s, forced=%s)",
-                 st["is_paused"], pending.get("force_check"))
-        result = await do_bank_check(st)
-        state.mark_check(st, result)
-    else:
+    # Дросселирование: банк не дёргаем чаще чем раз в 14 минут
+    # (исключение: ручная команда /check всегда форсирует)
+    forced = pending.get("force_check", False)
+    minutes_since_check = _minutes_since(st.get("last_check_at"))
+    too_soon = (minutes_since_check is not None
+                and minutes_since_check < BANK_CHECK_INTERVAL_MIN
+                and not forced)
+
+    if st["is_paused"] and not forced:
         log.info("Skipping bank check — bot is paused")
         state.mark_check(st, "пропущено (на паузе)")
+    elif too_soon:
+        log.info("Skipping bank check — last check was %.1f min ago (need ≥%d)",
+                 minutes_since_check, BANK_CHECK_INTERVAL_MIN)
+        # last_check_at и last_check_result не трогаем — пусть остаются от прошлого
+    else:
+        log.info("Running bank check (paused=%s, forced=%s, since_last=%s)",
+                 st["is_paused"], forced, minutes_since_check)
+        result = await do_bank_check(st)
+        state.mark_check(st, result)
 
     if pending.get("show_last"):
         await show_last_payments()
