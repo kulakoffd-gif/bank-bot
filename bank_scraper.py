@@ -186,6 +186,18 @@ async def _do_scrape(
     records = data.get("Data") or []
     log.info("Total records returned: %d (Total field=%s)", len(records), data.get("Total"))
 
+    # ДИАГНОСТИКА: показываем 10 самых свежих по DateOperation
+    if records:
+        sorted_recs = sorted(records, key=lambda r: r.get("DateOperation", ""), reverse=True)
+        log.info("=== 10 newest records in response (by DateOperation) ===")
+        for r in sorted_recs[:10]:
+            title = (r.get("Title") or "")[:80]
+            is_inc = (r.get("BeneficiaryAccount") or "").replace(" ", "") == iban_target
+            mark = "📥" if is_inc else "📤"
+            log.info("  %s %s | %s | id=%s",
+                     mark, r.get("DateOperation", "?")[:10], title, r.get("Id"))
+        log.info("=== end of debug list ===")
+
     # Фильтруем только входящие — те, где BeneficiaryAccount == наш счёт
     our_iban_compact = iban_target  # уже без пробелов
     incoming = []
