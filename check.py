@@ -132,7 +132,7 @@ async def do_bank_check(st: dict) -> str:
         if is_first_run:
             log.info("Initial run: marking %s as seen", tx.transaction_id)
         else:
-            telegram_io.send(format_payment(tx))
+            telegram_io.broadcast(format_payment(tx))
             new_count += 1
         seen.add(tx.transaction_id)
 
