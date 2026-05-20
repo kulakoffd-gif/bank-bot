@@ -47,5 +47,7 @@
   "is_paused": false,
   "last_check_at": "2026-05-20T16:37:40.623699+00:00",
   "last_check_result": "новых поступлений: 0",
-  "recipients": []
+  "recipients": [
+    -1003944910697
+  ]
 }
