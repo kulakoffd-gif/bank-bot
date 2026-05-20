@@ -12,13 +12,17 @@ def load() -> dict:
     if not STATE_PATH.exists():
         return _default()
     try:
-        return json.loads(STATE_PATH.read_text())
+        data = json.loads(STATE_PATH.read_text())
     except Exception:
         return _default()
+    # миграция: гарантируем что все поля присутствуют
+    for k, v in _default().items():
+        if k not in data:
+            data[k] = v
+    return data
 
 
 def save(state: dict) -> None:
-    # prune seen history
     seen = state.get("seen_transactions", [])
     if len(seen) > MAX_SEEN_HISTORY:
         state["seen_transactions"] = seen[-MAX_SEEN_HISTORY:]
@@ -37,4 +41,5 @@ def _default() -> dict:
         "is_paused": False,
         "last_check_at": None,
         "last_check_result": None,
+        "recipients": [],  # доп. получатели уведомлений (кроме админа)
     }
