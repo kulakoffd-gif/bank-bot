@@ -186,21 +186,19 @@ async def _do_scrape(
     records = data.get("Data") or []
     log.info("Total records returned: %d (Total field=%s)", len(records), data.get("Total"))
 
-    # ДИАГНОСТИКА: показываем 5 самых свежих с полными полями
+    # ДИАГНОСТИКА: дамп ВСЕХ входящих с датой и суммой
     if records:
-        sorted_recs = sorted(records, key=lambda r: r.get("DateOperation", ""), reverse=True)
-        log.info("=== 5 newest records FULL DUMP ===")
-        for r in sorted_recs[:5]:
-            log.info("--- id=%s, date=%s ---", r.get("Id"), r.get("DateOperation", "?")[:10])
-            log.info("  Title         = %s", (r.get("Title") or "")[:120])
-            log.info("  IsCredit      = %s", r.get("IsCredit"))
-            log.info("  IsDebit       = %s", r.get("IsDebit"))
-            log.info("  PayerAccount  = %s", r.get("PayerAccount"))
-            log.info("  PayerName     = %s", r.get("PayerName"))
-            log.info("  BeneficiaryAccount = %s", r.get("BeneficiaryAccount"))
-            log.info("  BeneficiaryName    = %s", r.get("BeneficiaryName"))
-            log.info("  AmountOfTransfer = %s, Debit = %s", r.get("AmountOfTransfer"), r.get("Debit"))
-        log.info("=== end full dump ===")
+        our_iban = iban_target
+        log.info("=== ALL INCOMING DUMP ===")
+        for r in sorted(records, key=lambda r: r.get("DateOperation", ""), reverse=True):
+            beneficiary_acc = (r.get("BeneficiaryAccount") or "").replace(" ", "")
+            if beneficiary_acc != our_iban:
+                continue
+            amount = r.get("AmountOfTransfer") or r.get("Debit") or "?"
+            log.info("DUMP|id=%s|date=%s|amount=%s|payer=%s",
+                     r.get("Id"), r.get("DateOperation", "?")[:10],
+                     amount, (r.get("PayerName") or "").strip())
+        log.info("=== end dump ===")
 
     # Фильтруем только входящие — те, где BeneficiaryAccount == наш счёт
     our_iban_compact = iban_target  # уже без пробелов
