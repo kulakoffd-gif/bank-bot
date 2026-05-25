@@ -252,19 +252,31 @@ async def do_bank_check(st: dict) -> str:
         )
         return f"ошибка: {exc}"
 
-    is_first_run = len(st["seen_transactions"]) == 0
+    # ВАЖНО: дедуплицируем по стабильному ключу (УНП + № документа + дата + сумма),
+    # потому что Id в банке меняется между стадиями обработки платежа.
+    # Поле seen_transactions хранит композитные ключи (после миграции).
+
+    # Защита от первого запуска С НОВОЙ ЛОГИКОЙ: если все элементы старого формата
+    # (просто цифры), считаем что состояние «грязное» и переинициализируем тихо.
+    old_format = all(s.isdigit() for s in st["seen_transactions"]) if st["seen_transactions"] else False
+    is_first_run = (len(st["seen_transactions"]) == 0) or old_format
+    if old_format:
+        log.warning("State has OLD-format IDs (digits only). Migrating: marking all current as seen, no notifications.")
+        st["seen_transactions"] = []
+
     new_count = 0
     seen = set(st["seen_transactions"])
 
     for tx in transactions:
-        if not tx.transaction_id or tx.transaction_id in seen:
+        key = tx.dedup_key
+        if not key or key in seen:
             continue
         if is_first_run:
-            log.info("Initial run: marking %s as seen", tx.transaction_id)
+            log.info("Initial run: marking key=%s (id=%s) as seen", key, tx.transaction_id)
         else:
             telegram_io.broadcast(format_payment(tx), st.get("recipients", []))
             new_count += 1
-        seen.add(tx.transaction_id)
+        seen.add(key)
 
     st["seen_transactions"] = sorted(seen)
 

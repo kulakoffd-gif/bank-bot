@@ -33,12 +33,33 @@ SEL_STATEMENT_ROW  = 'table tr, .statement-row, .operation-row'
 
 @dataclass
 class Transaction:
-    transaction_id: str
+    transaction_id: str       # сырое поле Id из банка (может меняться между стадиями обработки!)
+    dedup_key: str            # СТАБИЛЬНЫЙ ключ для дедупликации (не меняется в банке)
     booking_date: str
     amount: str
     currency: str
     counterparty: str
     purpose: str
+
+
+def _make_dedup_key(r: dict) -> str:
+    """Стабильный ключ для дедупликации — НЕ зависит от внутреннего Id банка,
+    который меняется между состояниями (предв./проведённый/окончательный).
+
+    Используем стабильные поля из платёжной инструкции:
+      - УНП плательщика
+      - Номер документа
+      - Дата платёжной инструкции
+      - Сумма перевода
+    Эта комбинация уникальна для каждого реального платежа.
+    """
+    parts = [
+        str(r.get("PayerUnp") or "").strip(),
+        str(r.get("NumberPaymentInstructions") or "").strip(),
+        str(r.get("DatePaymentInstructions") or "").strip()[:10],  # только дата YYYY-MM-DD
+        str(r.get("AmountOfTransfer") or r.get("Debit") or "").strip(),
+    ]
+    return "|".join(parts)
 
 
 async def fetch_incoming_transactions(days_back: int = 3) -> list[Transaction]:
@@ -186,19 +207,17 @@ async def _do_scrape(
     records = data.get("Data") or []
     log.info("Total records returned: %d (Total field=%s)", len(records), data.get("Total"))
 
-    # ДИАГНОСТИКА: дамп ВСЕХ входящих с датой и суммой
+    # ДИАГНОСТИКА: показываем 5 самых свежих с полными полями
     if records:
-        our_iban = iban_target
-        log.info("=== ALL INCOMING DUMP ===")
-        for r in sorted(records, key=lambda r: r.get("DateOperation", ""), reverse=True):
-            beneficiary_acc = (r.get("BeneficiaryAccount") or "").replace(" ", "")
-            if beneficiary_acc != our_iban:
-                continue
-            amount = r.get("AmountOfTransfer") or r.get("Debit") or "?"
-            log.info("DUMP|id=%s|date=%s|amount=%s|payer=%s",
-                     r.get("Id"), r.get("DateOperation", "?")[:10],
-                     amount, (r.get("PayerName") or "").strip())
-        log.info("=== end dump ===")
+        sorted_recs = sorted(records, key=lambda r: r.get("DateOperation", ""), reverse=True)
+        log.info("=== 5 newest records FULL DUMP ===")
+        for r in sorted_recs[:5]:
+            log.info("--- id=%s, dedup_key=%s, date=%s ---",
+                     r.get("Id"), _make_dedup_key(r), r.get("DateOperation", "?")[:10])
+            log.info("  Title         = %s", (r.get("Title") or "")[:120])
+            log.info("  PayerName     = %s", r.get("PayerName"))
+            log.info("  AmountOfTransfer = %s, Debit = %s", r.get("AmountOfTransfer"), r.get("Debit"))
+        log.info("=== end full dump ===")
 
     # Фильтруем только входящие — те, где BeneficiaryAccount == наш счёт
     our_iban_compact = iban_target  # уже без пробелов
@@ -209,6 +228,7 @@ async def _do_scrape(
         if beneficiary_acc == our_iban_compact:
             tx = Transaction(
                 transaction_id=str(r.get("Id") or ""),
+                dedup_key=_make_dedup_key(r),
                 booking_date=r.get("DateOperation", "")[:10],
                 amount=str(r.get("AmountOfTransfer") or r.get("Debit") or "?"),
                 currency=r.get("IsoOfTransfer", "BYN"),
