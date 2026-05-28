@@ -20,15 +20,13 @@ from playwright.async_api import async_playwright, Page, TimeoutError as Playwri
 
 log = logging.getLogger(__name__)
 
-LOGIN_URL = "https://icb.asb.by/Login/Index"
-ACCOUNTS_URL = "https://icb.asb.by/"
-INCOMING_PAYMENTS_URL = "https://icb.asb.by/Accounts/IncomingPayments"
+BASE_URL = "https://dcsc.belarusbank.by"
+LOGIN_URL = f"{BASE_URL}/auth"
 
-# --- селекторы (правим после первого запуска, если структура страницы другая) ---
-SEL_LOGIN_INPUT    = 'input[name="Login"], input[type="text"]'
-SEL_PASSWORD_INPUT = 'input[name="Password"], input[type="password"]'
-SEL_SUBMIT_BTN     = 'button[type="submit"], input[type="submit"]'
-SEL_STATEMENT_ROW  = 'table tr, .statement-row, .operation-row'
+# Селекторы новой платформы (Angular SPA)
+SEL_LOGIN_INPUT    = 'input[placeholder="Логин"]'
+SEL_PASSWORD_INPUT = 'input[placeholder="Пароль"]'
+SEL_SUBMIT_BTN     = 'button[type="submit"]'
 
 
 @dataclass
@@ -87,26 +85,68 @@ async def fetch_incoming_transactions(days_back: int = 3) -> list[Transaction]:
 async def _do_scrape(
     page: Page, login: str, password: str, iban: str, days_back: int
 ) -> list[Transaction]:
-    log.info("Opening login page")
-    await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30_000)
+    # === ИССЛЕДОВАТЕЛЬСКАЯ ВЕРСИЯ под новую платформу dcsc.belarusbank.by ===
+    # Логинимся, потом дампим всё что увидим. Реальный парсинг — следующая итерация.
+
+    log.info("Opening new login page: %s", LOGIN_URL)
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
+    await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=20_000)
+    await asyncio.sleep(2)
 
     log.info("Filling credentials")
     await page.fill(SEL_LOGIN_INPUT, login)
     await page.fill(SEL_PASSWORD_INPUT, password)
+    await page.screenshot(path="/tmp/00_login_filled.png", full_page=True)
     await page.click(SEL_SUBMIT_BTN)
 
+    # ждём редиректа куда угодно НЕ на /auth
     try:
-        await page.wait_for_url(re.compile(r"icb\.asb\.by/(?!Login)"), timeout=30_000)
+        await page.wait_for_function(
+            "() => !window.location.pathname.startsWith('/auth')",
+            timeout=30_000,
+        )
     except PlaywrightTimeout:
-        # сохраняем что увидели для диагностики
         html = await page.content()
-        log.error("Login did not redirect. Current URL: %s", page.url)
-        log.error("Page content (first 500 chars): %s", html[:500])
-        raise RuntimeError("Login failed — check BANK_LOGIN / BANK_PASSWORD secrets")
+        body_text = await page.evaluate("() => document.body.innerText")
+        log.error("Login did not redirect. URL=%s", page.url)
+        log.error("Page text: %s", body_text[:500])
+        await page.screenshot(path="/tmp/01_login_failed.png", full_page=True)
+        with open("/tmp/01_login_failed.html", "w") as f:
+            f.write(html)
+        raise RuntimeError("Login failed — bank rejected credentials or new flow detected")
 
-    log.info("Logged in. Going to accounts page")
-    await page.goto(ACCOUNTS_URL, wait_until="networkidle", timeout=30_000)
+    log.info("Logged in. Current URL: %s", page.url)
     await asyncio.sleep(3)
+    await page.screenshot(path="/tmp/02_after_login.png", full_page=True)
+    with open("/tmp/02_after_login.html", "w") as f:
+        f.write(await page.content())
+
+    # Собираем все XHR/fetch endpoints — это даст подсказки про API
+    api_calls: list[dict] = []
+
+    async def on_response(resp):
+        u = resp.url
+        if "/ibservices/" in u or "/api/" in u:
+            api_calls.append({"status": resp.status, "url": u, "method": resp.request.method})
+
+    page.on("response", lambda r: asyncio.create_task(on_response(r)))
+
+    # Проверим какие ссылки в меню есть
+    menu_links = await page.evaluate("""() => {
+        return Array.from(document.querySelectorAll('a[href], [routerlink]')).map(e => ({
+            href: e.getAttribute('href') || e.getAttribute('routerlink') || '',
+            text: e.innerText.trim().slice(0, 50),
+        })).filter(x => x.href && x.href.length < 100);
+    }""")
+    log.info("Menu links found: %d", len(menu_links))
+    for ml in menu_links[:30]:
+        log.info("  %s → %s", ml['href'], ml['text'])
+
+    # На время изучения — возвращаем пустой список без ошибки
+    log.warning("New platform exploration mode — returning [] for now")
+    return []
+
+    # СТАРЫЙ КОД НИЖЕ НЕАКТИВЕН (для нового сайта неприменим)
 
     # Получаем полный список счетов из памяти Kendo Grid и находим наш по IBAN
     iban_target = os.environ.get("BANK_ACCOUNT_IBAN", "").replace(" ", "")
