@@ -118,31 +118,70 @@ async def _do_scrape(
     log.info("Logged in. Current URL: %s", page.url)
     await asyncio.sleep(3)
     await page.screenshot(path="/tmp/02_after_login.png", full_page=True)
-    with open("/tmp/02_after_login.html", "w") as f:
-        f.write(await page.content())
 
-    # Собираем все XHR/fetch endpoints — это даст подсказки про API
+    # Перехватываем все XHR/fetch — это покажет реальную структуру API
     api_calls: list[dict] = []
 
-    async def on_response(resp):
+    def record(resp):
         u = resp.url
-        if "/ibservices/" in u or "/api/" in u:
-            api_calls.append({"status": resp.status, "url": u, "method": resp.request.method})
+        if "/ibservices/" in u and resp.status != 304:
+            api_calls.append({
+                "status": resp.status,
+                "method": resp.request.method,
+                "url": u,
+            })
 
-    page.on("response", lambda r: asyncio.create_task(on_response(r)))
+    page.on("response", record)
 
-    # Проверим какие ссылки в меню есть
-    menu_links = await page.evaluate("""() => {
-        return Array.from(document.querySelectorAll('a[href], [routerlink]')).map(e => ({
-            href: e.getAttribute('href') || e.getAttribute('routerlink') || '',
-            text: e.innerText.trim().slice(0, 50),
-        })).filter(x => x.href && x.href.length < 100);
-    }""")
-    log.info("Menu links found: %d", len(menu_links))
-    for ml in menu_links[:30]:
-        log.info("  %s → %s", ml['href'], ml['text'])
+    # Пробуем кликнуть на меню «Счета» — посмотрим какие API дёргает
+    log.info("Trying to click 'Счета' menu...")
+    try:
+        # На Angular-сайтах меню часто — это <a> с текстом или <button>
+        await page.click('text=Счета', timeout=5000)
+        await asyncio.sleep(3)
+        log.info("After click URL: %s", page.url)
+        await page.screenshot(path="/tmp/03_accounts.png", full_page=True)
+        with open("/tmp/03_accounts.html", "w") as f:
+            f.write(await page.content())
+    except Exception as e:
+        log.warning("Could not click Счета: %s", e)
 
-    # На время изучения — возвращаем пустой список без ошибки
+    # Дамп всех API endpoints
+    log.info("=== Captured /ibservices/ calls (%d) ===", len(api_calls))
+    seen_endpoints = set()
+    for c in api_calls:
+        endpoint = c["url"].split("?")[0]
+        if endpoint not in seen_endpoints:
+            seen_endpoints.add(endpoint)
+            log.info("  %s %s %s", c["status"], c["method"], endpoint.replace(BASE_URL, ""))
+
+    # Также сохраняем содержимое некоторых ключевых ответов
+    # для последующего анализа — попробуем взять список счетов и оповещения
+    log.info("Probing key endpoints directly...")
+    for path in [
+        "/ibservices/account/getAllAccountsInfo",
+        "/ibservices/account/getAccountsList",
+        "/ibservices/account/getAccounts",
+        "/ibservices/notification/getNotifications",
+        "/ibservices/notification/getAccountNotifications",
+        "/ibservices/account/getRecentOperations",
+    ]:
+        try:
+            result = await page.evaluate(f"""async () => {{
+                try {{
+                    const r = await fetch('{path}', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: '{{}}',
+                        credentials: 'include',
+                    }});
+                    return r.status + ' :: ' + (await r.text()).slice(0, 2000);
+                }} catch(e) {{ return 'EXC: ' + e.message; }}
+            }}""")
+            log.info("  PROBE %s → %s", path, result[:300])
+        except Exception as e:
+            log.info("  PROBE %s → exception: %s", path, e)
+
     log.warning("New platform exploration mode — returning [] for now")
     return []
 
