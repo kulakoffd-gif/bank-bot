@@ -49,8 +49,8 @@
   ],
   "last_telegram_update_id": 673453979,
   "is_paused": false,
-  "last_check_at": "2026-05-28T07:21:16.930917+00:00",
-  "last_check_result": "ошибка: Login failed — check BANK_LOGIN / BANK_PASSWORD secrets",
+  "last_check_at": "2026-05-28T07:36:02.395374+00:00",
+  "last_check_result": "новых поступлений: 0",
   "recipients": [
     -1003944910697
   ]
