@@ -177,33 +177,26 @@ async def _do_scrape(
 
     log.info("URL after account click: %s", page.url)
 
-    # Ищем кнопки/ссылки «Выписка», «Операции» и т.п.
-    for btn_text in ["Выписка", "Операции", "История", "Движение"]:
+    # Кликаем «Выписка» — в правой панели после открытия счёта
+    log.info("Clicking 'Выписка' (first match)...")
+    try:
+        await page.locator('button:has-text("Выписка"):not(:has-text("счетам"))').first.click(timeout=5000)
+        log.info("Clicked Выписка")
+        await asyncio.sleep(5)
+        log.info("URL after Выписка: %s", page.url)
+        await page.screenshot(path="/tmp/05_after_vypiska.png", full_page=True)
+        with open("/tmp/05_after_vypiska.html", "w") as f:
+            f.write(await page.content())
+    except Exception as e:
+        log.warning("Could not click Выписка: %s", e)
+        # Альтернативный селектор
         try:
-            await page.click(f'text="{btn_text}"', timeout=3000)
-            log.info("Clicked: %s", btn_text)
-            await asyncio.sleep(4)
-            await page.screenshot(path=f"/tmp/05_after_{btn_text}.png", full_page=True)
-            log.info("  URL now: %s", page.url)
-            break
-        except Exception:
-            log.info("  No '%s' button found", btn_text)
-
-    # Может быть это вид с табами/секциями. Ищем все видимые ссылки на странице
-    visible_links = await page.evaluate("""() => {
-        const elements = document.querySelectorAll('a, button, [role="button"], [routerlink]');
-        return Array.from(elements).map(e => ({
-            text: e.innerText.trim().slice(0, 50),
-            href: e.getAttribute('href') || e.getAttribute('routerlink') || '',
-        })).filter(x => x.text && x.text.length < 50 && x.text.length > 1);
-    }""")
-    log.info("=== Visible clickable elements (first 40) ===")
-    seen = set()
-    for v in visible_links[:40]:
-        key = (v['text'], v['href'])
-        if key not in seen:
-            seen.add(key)
-            log.info("  '%s' [%s]", v['text'][:40], v['href'][:50])
+            await page.get_by_text("Выписка", exact=True).first.click(timeout=5000)
+            log.info("Clicked via get_by_text")
+            await asyncio.sleep(5)
+            await page.screenshot(path="/tmp/05_after_vypiska2.png", full_page=True)
+        except Exception as e2:
+            log.warning("Alt click also failed: %s", e2)
 
     # Дамп всех API endpoints с request bodies
     log.info("=== Captured /ibservices/ calls (%d) ===", len(api_calls))
