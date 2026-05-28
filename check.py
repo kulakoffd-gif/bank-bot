@@ -11,7 +11,7 @@ import telegram_io
 from bank_scraper import fetch_incoming_transactions, Transaction
 
 # Минимальный интервал между обращениями к банку (минут)
-BANK_CHECK_INTERVAL_MIN = 14
+BANK_CHECK_INTERVAL_MIN = 0  # DEBUG: throttle off during platform migration
 
 logging.basicConfig(
     level=logging.INFO,
