@@ -177,26 +177,39 @@ async def _do_scrape(
 
     log.info("URL after account click: %s", page.url)
 
-    # Кликаем «Выписка» — в правой панели после открытия счёта
-    log.info("Clicking 'Выписка' (first match)...")
+    # Дамп DOM вокруг 'Выписка' для отладки селектора
+    vyp_info = await page.evaluate("""() => {
+        const xpath = "//*[normalize-space(text())='Выписка']";
+        const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        const out = [];
+        for (let i = 0; i < result.snapshotLength; i++) {
+            const el = result.snapshotItem(i);
+            out.push({
+                tag: el.tagName,
+                className: el.className,
+                id: el.id || '',
+                parentTag: el.parentElement?.tagName,
+                parentClass: el.parentElement?.className,
+                visible: el.offsetParent !== null,
+                text: el.innerText?.trim().slice(0, 30),
+            });
+        }
+        return out;
+    }""")
+    log.info("=== Elements with text 'Выписка' (%d) ===", len(vyp_info))
+    for i, v in enumerate(vyp_info):
+        log.info("  [%d] %s.%s visible=%s parent=%s.%s", i, v['tag'], v['className'][:30], v['visible'], v['parentTag'], (v['parentClass'] or '')[:30])
+
+    # Пытаемся клик с force=True
+    log.info("Clicking 'Выписка' with force...")
     try:
-        await page.locator('button:has-text("Выписка"):not(:has-text("счетам"))').first.click(timeout=5000)
-        log.info("Clicked Выписка")
+        await page.locator('xpath=//*[normalize-space(text())="Выписка"]').first.click(force=True, timeout=5000)
+        log.info("Clicked Выписка (force)")
         await asyncio.sleep(5)
-        log.info("URL after Выписка: %s", page.url)
+        log.info("URL after: %s", page.url)
         await page.screenshot(path="/tmp/05_after_vypiska.png", full_page=True)
-        with open("/tmp/05_after_vypiska.html", "w") as f:
-            f.write(await page.content())
     except Exception as e:
-        log.warning("Could not click Выписка: %s", e)
-        # Альтернативный селектор
-        try:
-            await page.get_by_text("Выписка", exact=True).first.click(timeout=5000)
-            log.info("Clicked via get_by_text")
-            await asyncio.sleep(5)
-            await page.screenshot(path="/tmp/05_after_vypiska2.png", full_page=True)
-        except Exception as e2:
-            log.warning("Alt click also failed: %s", e2)
+        log.warning("Force click failed: %s", e)
 
     # Дамп всех API endpoints с request bodies
     log.info("=== Captured /ibservices/ calls (%d) ===", len(api_calls))
