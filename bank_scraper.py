@@ -177,39 +177,59 @@ async def _do_scrape(
 
     log.info("URL after account click: %s", page.url)
 
-    # Дамп DOM вокруг 'Выписка' для отладки селектора
-    vyp_info = await page.evaluate("""() => {
-        const xpath = "//*[normalize-space(text())='Выписка']";
-        const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-        const out = [];
-        for (let i = 0; i < result.snapshotLength; i++) {
-            const el = result.snapshotItem(i);
-            out.push({
-                tag: el.tagName,
-                className: el.className,
-                id: el.id || '',
-                parentTag: el.parentElement?.tagName,
-                parentClass: el.parentElement?.className,
-                visible: el.offsetParent !== null,
-                text: el.innerText?.trim().slice(0, 30),
-            });
-        }
-        return out;
-    }""")
-    log.info("=== Elements with text 'Выписка' (%d) ===", len(vyp_info))
-    for i, v in enumerate(vyp_info):
-        log.info("  [%d] %s.%s visible=%s parent=%s.%s", i, v['tag'], v['className'][:30], v['visible'], v['parentTag'], (v['parentClass'] or '')[:30])
+    # Прямое прощупывание endpoints с реальным AccountId=18067
+    target_account_id = 18067  # известный AccountId для нашего IBAN
 
-    # Пытаемся клик с force=True
-    log.info("Clicking 'Выписка' with force...")
-    try:
-        await page.locator('xpath=//*[normalize-space(text())="Выписка"]').first.click(force=True, timeout=5000)
-        log.info("Clicked Выписка (force)")
-        await asyncio.sleep(5)
-        log.info("URL after: %s", page.url)
-        await page.screenshot(path="/tmp/05_after_vypiska.png", full_page=True)
-    except Exception as e:
-        log.warning("Force click failed: %s", e)
+    candidate_endpoints = [
+        ("cardfile/getCardfile", {"accountId": target_account_id}),
+        ("cardfile/getCardfileByAccountId", {"accountId": target_account_id}),
+        ("cardfile/getCardfileList", {"accountId": target_account_id}),
+        ("cardfile/getList", {"accountId": target_account_id}),
+        ("statement/getStatement", {"accountId": target_account_id}),
+        ("statement/getAccountStatement", {"accountId": target_account_id}),
+        ("statement/getStatementList", {"accountId": target_account_id}),
+        ("statement/getList", {"accountId": target_account_id}),
+        ("account/getStatement", {"accountId": target_account_id}),
+        ("account/getCardfile", {"accountId": target_account_id}),
+        ("account/getCardfileList", {"accountId": target_account_id}),
+        ("account/getOperations", {"accountId": target_account_id}),
+        ("operation/getList", {"accountId": target_account_id}),
+        ("operation/getOperations", {"accountId": target_account_id}),
+        ("operation/getOperationList", {"accountId": target_account_id}),
+        # Полные параметры
+        ("statement/getStatement",
+         {"accountId": target_account_id,
+          "dateFrom": "2026-05-21", "dateTo": "2026-05-28"}),
+        ("cardfile/getCardfile",
+         {"accountId": target_account_id,
+          "dateFrom": "2026-05-21", "dateTo": "2026-05-28"}),
+    ]
+
+    log.info("=== Probing %d endpoints ===", len(candidate_endpoints))
+    for path, body in candidate_endpoints:
+        try:
+            result = await page.evaluate("""async ({path, body}) => {
+                try {
+                    const r = await fetch('/ibservices/' + path, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(body),
+                        credentials: 'include',
+                    });
+                    const text = await r.text();
+                    return r.status + ' :: ' + text.slice(0, 800);
+                } catch(e) { return 'EXC: ' + e.message; }
+            }""", {"path": path, "body": body})
+            # Печатаем только успешные (200) и многообещающие
+            status = result.split(" :: ")[0] if " :: " in result else result
+            if status == "200":
+                log.info("  ✅ %s body=%s", path, body)
+                log.info("     %s", result[:500])
+            elif status not in ("404", "500"):
+                log.info("  ⚠️ %s status=%s body=%s", path, status, body)
+                log.info("     %s", result[:300])
+        except Exception as e:
+            log.info("  EXC %s: %s", path, e)
 
     # Дамп всех API endpoints с request bodies
     log.info("=== Captured /ibservices/ calls (%d) ===", len(api_calls))
