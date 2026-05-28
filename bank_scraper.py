@@ -119,70 +119,73 @@ async def _do_scrape(
     await asyncio.sleep(3)
     await page.screenshot(path="/tmp/02_after_login.png", full_page=True)
 
-    # Перехватываем все XHR/fetch — это покажет реальную структуру API
+    # Перехватываем все XHR/fetch с request/response telom
     api_calls: list[dict] = []
 
-    def record(resp):
+    async def capture_response(resp):
         u = resp.url
         if "/ibservices/" in u and resp.status != 304:
+            try:
+                body = await resp.text()
+            except Exception:
+                body = "<no body>"
+            req_body = ""
+            try:
+                req_body = resp.request.post_data or ""
+            except Exception:
+                pass
             api_calls.append({
                 "status": resp.status,
                 "method": resp.request.method,
                 "url": u,
+                "req_body": req_body[:500],
+                "resp_body": body[:3000],
             })
 
-    page.on("response", record)
+    page.on("response", lambda r: asyncio.create_task(capture_response(r)))
 
-    # Пробуем кликнуть на меню «Счета» — посмотрим какие API дёргает
-    log.info("Trying to click 'Счета' menu...")
+    # Кликаем на меню «Счета»
+    log.info("Clicking 'Счета'...")
     try:
-        # На Angular-сайтах меню часто — это <a> с текстом или <button>
         await page.click('text=Счета', timeout=5000)
         await asyncio.sleep(3)
         log.info("After click URL: %s", page.url)
         await page.screenshot(path="/tmp/03_accounts.png", full_page=True)
-        with open("/tmp/03_accounts.html", "w") as f:
-            f.write(await page.content())
     except Exception as e:
-        log.warning("Could not click Счета: %s", e)
+        log.warning("Could not click: %s", e)
 
-    # Дамп всех API endpoints
+    # Кликаем на счёт с нашим IBAN — если найдём
+    iban_target = os.environ.get("BANK_ACCOUNT_IBAN", "").replace(" ", "")
+    # IBAN на странице может быть с пробелами или без — ищем оба варианта
+    iban_with_spaces = " ".join([iban_target[i:i+4] for i in range(0, len(iban_target), 4)])
+    log.info("Looking for our IBAN on page: %s OR %s", iban_target, iban_with_spaces)
+
+    # Попробуем кликнуть на строку с этим IBAN
+    try:
+        # Несколько вариантов селекторов
+        for sel in [f'text="{iban_target}"', f'text="{iban_with_spaces}"',
+                    f'text=/30120041040434000000/',]:
+            try:
+                await page.click(sel, timeout=3000)
+                log.info("Clicked on account row using selector: %s", sel)
+                await asyncio.sleep(3)
+                await page.screenshot(path="/tmp/04_account_detail.png", full_page=True)
+                break
+            except Exception:
+                continue
+    except Exception as e:
+        log.warning("Could not click account: %s", e)
+
+    # Дамп всех API endpoints с request bodies
     log.info("=== Captured /ibservices/ calls (%d) ===", len(api_calls))
-    seen_endpoints = set()
     for c in api_calls:
-        endpoint = c["url"].split("?")[0]
-        if endpoint not in seen_endpoints:
-            seen_endpoints.add(endpoint)
-            log.info("  %s %s %s", c["status"], c["method"], endpoint.replace(BASE_URL, ""))
+        endpoint = c["url"].split("?")[0].replace(BASE_URL, "")
+        log.info("--- %s %s %s ---", c["status"], c["method"], endpoint)
+        if c["req_body"]:
+            log.info("  REQ:  %s", c["req_body"][:300])
+        log.info("  RESP: %s", c["resp_body"][:1500])
 
-    # Также сохраняем содержимое некоторых ключевых ответов
-    # для последующего анализа — попробуем взять список счетов и оповещения
-    log.info("Probing key endpoints directly...")
-    for path in [
-        "/ibservices/account/getAllAccountsInfo",
-        "/ibservices/account/getAccountsList",
-        "/ibservices/account/getAccounts",
-        "/ibservices/notification/getNotifications",
-        "/ibservices/notification/getAccountNotifications",
-        "/ibservices/account/getRecentOperations",
-    ]:
-        try:
-            result = await page.evaluate(f"""async () => {{
-                try {{
-                    const r = await fetch('{path}', {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: '{{}}',
-                        credentials: 'include',
-                    }});
-                    return r.status + ' :: ' + (await r.text()).slice(0, 2000);
-                }} catch(e) {{ return 'EXC: ' + e.message; }}
-            }}""")
-            log.info("  PROBE %s → %s", path, result[:300])
-        except Exception as e:
-            log.info("  PROBE %s → exception: %s", path, e)
-
-    log.warning("New platform exploration mode — returning [] for now")
+    log.warning("Exploration mode — returning []")
     return []
 
     # СТАРЫЙ КОД НИЖЕ НЕАКТИВЕН (для нового сайта неприменим)
