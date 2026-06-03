@@ -309,19 +309,26 @@ async def _do_scrape(
     for b in stmt_buttons[:50]:
         log.info("  text='%s' title='%s'", b['text'], b['title'])
 
-    # Пробуем каждую "получательную" кнопку
-    for label in ["Получить", "Применить", "Сформировать", "Поиск", "Найти", "Показать", "Запросить"]:
-        try:
-            loc = page.get_by_role("button", name=label).first
-            if await loc.count() > 0:
-                log.info("Clicking button: %s", label)
-                await loc.click(timeout=5000)
-                await asyncio.sleep(10)
-                log.info("  URL: %s", page.url)
-                await page.screenshot(path=f"/tmp/06_after_{label}.png", full_page=True)
-                break
-        except Exception as e:
-            log.info("  '%s': %s", label, str(e)[:60])
+    # Жмём «Сформировать» через JS (так стабильнее с Angular)
+    log.info("Pressing 'Сформировать' via JS...")
+    clicked = await page.evaluate("""(label) => {
+        const btns = document.querySelectorAll('button, [role=button], a, [type=submit]');
+        for (const b of btns) {
+            const txt = (b.innerText || '').trim();
+            if (txt === label && b.offsetParent !== null) {
+                b.scrollIntoView();
+                b.click();
+                return true;
+            }
+        }
+        return false;
+    }""", "Сформировать")
+    log.info("  Сформировать clicked: %s", clicked)
+    await asyncio.sleep(12)  # ждём загрузку выписки
+    log.info("  URL: %s", page.url)
+    await page.screenshot(path="/tmp/06_after_сформировать.png", full_page=True)
+    with open("/tmp/06_after.html", "w") as f:
+        f.write(await page.content())
 
     # Запасной вариант: попробовать .first force click
     if not target_clicked.get("found"):
