@@ -81,8 +81,8 @@
   ],
   "last_telegram_update_id": 673453980,
   "is_paused": false,
-  "last_check_at": "2026-06-02T18:58:29.395547+00:00",
-  "last_check_result": "новых поступлений: 0",
+  "last_check_at": "2026-06-03T05:06:01.424683+00:00",
+  "last_check_result": "ошибка: IBAN BY86AKBB30120041040434000000 not found in bank",
   "recipients": [
     -1003944910697
   ]
