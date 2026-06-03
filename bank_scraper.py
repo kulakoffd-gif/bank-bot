@@ -259,20 +259,47 @@ async def _do_scrape(
     except Exception as e:
         log.warning("dblclick failed: %s", str(e)[:120])
 
-    # Пробуем кликнуть на любые кнопки выписки/операций
-    log.info("=== STEP 2.7: Try Выписка/Операции buttons ===")
-    for label in ["Выписка", "Выписку", "Операции", "Движение", "Получить выписку", "Подробнее"]:
+    # Пробуем кликнуть кнопку Выписка — у каждого счёта своя, ищем ту что в нашем ряду
+    log.info("=== STEP 2.7: Try Выписка buttons by index ===")
+    btns = await page.locator('button:has-text("Выписка")').all()
+    log.info("Found %d 'Выписка' buttons", len(btns))
+
+    iban_target = os.environ.get("BANK_ACCOUNT_IBAN", "").replace(" ", "")
+    iban_with_spaces = " ".join([iban_target[i:i+4] for i in range(0, len(iban_target), 4)])
+
+    # Сначала пробуем по индексу кнопки в той же строке что и наш IBAN — через JS
+    target_clicked = await page.evaluate("""(iban) => {
+        // Ищем строку таблицы содержащую наш IBAN
+        const rows = document.querySelectorAll('tr, [role=row], [class*=row]');
+        for (const row of rows) {
+            const txt = row.innerText || '';
+            if (txt.includes(iban) || txt.replace(/\\s/g, '').includes(iban.replace(/\\s/g, ''))) {
+                // Найдём кнопку Выписка внутри этой строки или её контейнера
+                const btn = row.querySelector('button');
+                if (btn) {
+                    btn.scrollIntoView();
+                    btn.click();
+                    return {found: true, btnText: btn.innerText};
+                }
+            }
+        }
+        return {found: false};
+    }""", iban_with_spaces)
+    log.info("JS-click attempt: %s", target_clicked)
+    await asyncio.sleep(5)
+    log.info("URL: %s", page.url)
+    await page.screenshot(path="/tmp/05_after_vypiska.png", full_page=True)
+
+    # Запасной вариант: попробовать .first force click
+    if not target_clicked.get("found"):
         try:
-            loc = page.get_by_text(label, exact=False).first
-            if await loc.count() > 0:
-                log.info("Trying button: %s", label)
-                await loc.click(timeout=5000)
-                await asyncio.sleep(4)
-                log.info("  After click URL: %s", page.url)
-                await page.screenshot(path=f"/tmp/05_after_{label}.png", full_page=True)
-                break
+            btn = page.locator('button:has-text("Выписка")').first
+            await btn.click(force=True, timeout=5000)
+            await asyncio.sleep(5)
+            log.info("Force-clicked first Выписка. URL: %s", page.url)
+            await page.screenshot(path="/tmp/05_force_clicked.png", full_page=True)
         except Exception as e:
-            log.info("  '%s' failed: %s", label, str(e)[:80])
+            log.warning("Force click also failed: %s", str(e)[:120])
 
     # ── ШАГ 3: пассивное наблюдение API после открытия страницы счетов ──
     await asyncio.sleep(5)
