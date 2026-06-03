@@ -204,30 +204,48 @@ async def _do_scrape(page, login, password, iban, days_back):
         log.warning("First 3000 chars of body: %s", best["body"][:3000])
         return []
 
-    log.info("=== First operation (dict keys): %s ===", sorted(operations[0].keys()))
-    log.info("First operation values: %s",
-             json.dumps(operations[0], ensure_ascii=False)[:2000])
+    log.info("=== Keys of first op: %s ===", sorted(operations[0].keys()))
+    log.info("Full first op: %s", json.dumps(operations[0], ensure_ascii=False, indent=2)[:3000])
 
-    # Парсим входящие
+    # Покажем direction-related поля для 3 первых ops чтобы определить как фильтровать
+    log.info("=== Direction-related fields for first 3 ops ===")
+    for i, op in enumerate(operations[:3]):
+        log.info(
+            "op[%d] amount=%s amountDebit=%s amountNatural=%s chargesType=%s typeDoc=%s "
+            "correspName=%s correspUNP=%s benefAccount=%s",
+            i,
+            op.get("amount"), op.get("amountDebit"), op.get("amountNatural"),
+            op.get("chargesType"), op.get("typeDoc"),
+            (op.get("correspondentName") or "")[:30], op.get("correspondentUNP"),
+            op.get("beneficiarAccount"),
+        )
+
+    # Парсим: для каждой операции пробуем угадать направление
     incoming = []
     for op in operations:
-        credit = op.get("credit") or op.get("creditAmount") or op.get("incomingAmount")
-        try:
-            credit_val = float(str(credit).replace(",", ".")) if credit else 0
-        except (ValueError, TypeError):
-            credit_val = 0
-        if credit_val > 0:
+        # Гипотеза 1: amountDebit > 0 → исходящий, иначе входящий
+        amt_debit = float(str(op.get("amountDebit") or 0).replace(",", ".") or 0)
+        amt = float(str(op.get("amount") or 0).replace(",", ".") or 0)
+        is_incoming_v1 = amt_debit == 0 and amt > 0
+
+        # Гипотеза 2: chargesType
+        charges = (op.get("chargesType") or "").lower()
+        is_incoming_v2 = charges in ("credit", "income", "incoming", "in")
+
+        if is_incoming_v1 or is_incoming_v2:
             tx = Transaction(
-                transaction_id=str(op.get("id") or op.get("operationId") or ""),
+                transaction_id=str(op.get("bmsgid") or ""),
                 dedup_key=_make_dedup_key(op),
                 booking_date=str(op.get("acceptDate") or op.get("documentDate") or "")[:10],
-                amount=str(credit),
-                currency=op.get("currency") or "BYN",
-                counterparty=str(op.get("payerName") or op.get("correspondentName")
-                                 or op.get("partnerName") or "Неизвестно"),
-                purpose=str(op.get("paymentPurpose") or op.get("purpose") or "—"),
+                amount=str(amt),
+                currency=op.get("currencyIso") or op.get("currency") or "BYN",
+                counterparty=str(op.get("correspondentName") or "Неизвестно"),
+                purpose=str(op.get("paymentPurpose") or "—"),
             )
             incoming.append(tx)
 
     log.info("Filtered %d incoming transactions", len(incoming))
+    for tx in incoming[:5]:
+        log.info("  %s | %s %s | %s",
+                 tx.booking_date, tx.amount, tx.currency, tx.counterparty[:40])
     return incoming
