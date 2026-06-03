@@ -293,6 +293,36 @@ async def _do_scrape(
     except Exception:
         pass
 
+    # === ШАГ 3: на странице выписки — найти кнопку Получить/Применить/Поиск ===
+    log.info("=== STEP 3: On statement page — find Get button ===")
+
+    # Дамп всех кнопок на странице выписки
+    stmt_buttons = await page.evaluate("""() => {
+        return Array.from(document.querySelectorAll('button, [role=button], a, [type=submit]'))
+            .filter(el => el.offsetParent !== null)
+            .map(el => ({
+                text: (el.innerText || '').trim().slice(0, 60),
+                title: el.getAttribute('title') || '',
+            })).filter(b => b.text);
+    }""")
+    log.info("Buttons on statement page (%d):", len(stmt_buttons))
+    for b in stmt_buttons[:50]:
+        log.info("  text='%s' title='%s'", b['text'], b['title'])
+
+    # Пробуем каждую "получательную" кнопку
+    for label in ["Получить", "Применить", "Сформировать", "Поиск", "Найти", "Показать", "Запросить"]:
+        try:
+            loc = page.get_by_role("button", name=label).first
+            if await loc.count() > 0:
+                log.info("Clicking button: %s", label)
+                await loc.click(timeout=5000)
+                await asyncio.sleep(10)
+                log.info("  URL: %s", page.url)
+                await page.screenshot(path=f"/tmp/06_after_{label}.png", full_page=True)
+                break
+        except Exception as e:
+            log.info("  '%s': %s", label, str(e)[:60])
+
     # Запасной вариант: попробовать .first force click
     if not target_clicked.get("found"):
         try:
