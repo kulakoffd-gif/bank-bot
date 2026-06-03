@@ -92,9 +92,15 @@ async def _do_scrape(page, login, password, iban, days_back):
     log.info("Logged in. URL: %s", page.url)
     await asyncio.sleep(5)
 
-    # Прямой вызов /ibservices/account/getAccountStatement
-    # AccountId известен — 18067 (получаем из ENV если нужна гибкость)
+    # AccountId известен из exploration — 18067
     account_id = int(os.environ.get("BANK_ACCOUNT_ID", "18067"))
+    client_id = int(os.environ.get("BANK_CLIENT_ID", "80182"))
+
+    # Заходим на страницу выписки — там сервер выставляет нужную сессию/cookie
+    statement_page = f"{BASE_URL}/work-place/account-statement?accountId={account_id}&clientId={client_id}"
+    log.info("Navigating to statement page to set session: %s", statement_page)
+    await page.goto(statement_page, wait_until="domcontentloaded", timeout=30_000)
+    await asyncio.sleep(5)
 
     date_from = (date.today() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     date_to = date.today().strftime("%Y-%m-%d")
