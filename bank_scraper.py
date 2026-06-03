@@ -269,26 +269,29 @@ async def _do_scrape(
 
     # Сначала пробуем по индексу кнопки в той же строке что и наш IBAN — через JS
     target_clicked = await page.evaluate("""(iban) => {
-        // Ищем строку таблицы содержащую наш IBAN
         const rows = document.querySelectorAll('tr, [role=row], [class*=row]');
         for (const row of rows) {
             const txt = row.innerText || '';
             if (txt.includes(iban) || txt.replace(/\\s/g, '').includes(iban.replace(/\\s/g, ''))) {
-                // Найдём кнопку Выписка внутри этой строки или её контейнера
                 const btn = row.querySelector('button');
-                if (btn) {
-                    btn.scrollIntoView();
-                    btn.click();
-                    return {found: true, btnText: btn.innerText};
-                }
+                if (btn) { btn.scrollIntoView(); btn.click();
+                    return {found: true, btnText: btn.innerText}; }
             }
         }
         return {found: false};
     }""", iban_with_spaces)
     log.info("JS-click attempt: %s", target_clicked)
-    await asyncio.sleep(5)
-    log.info("URL: %s", page.url)
+    # Долгий sleep чтобы выписка успела загрузиться
+    await asyncio.sleep(15)
+    log.info("URL after wait: %s", page.url)
     await page.screenshot(path="/tmp/05_after_vypiska.png", full_page=True)
+
+    # Скроллим вниз — может выписка догрузится при скролле
+    try:
+        await page.mouse.wheel(0, 800)
+        await asyncio.sleep(3)
+    except Exception:
+        pass
 
     # Запасной вариант: попробовать .first force click
     if not target_clicked.get("found"):
