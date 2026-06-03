@@ -1,26 +1,24 @@
 """
-Belarusbank corporate Internet Banking scraper — новая платформа dcsc.belarusbank.by.
+Belarusbank corporate IB scraper — dcsc.belarusbank.by.
 
-Логинимся через Playwright, потом дёргаем внутренний REST endpoint
-/ibservices/account/getAccountStatement напрямую через fetch().
+Полный UI-flow: логин → Счета → клик по строке счёта → клик Сформировать.
+Перехватываем ответ /ibservices/account/getAccountStatement.
 """
 
 import asyncio
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://dcsc.belarusbank.by"
 LOGIN_URL = f"{BASE_URL}/auth"
 
-# Селекторы (Angular SPA)
 SEL_LOGIN_INPUT    = 'input[placeholder="Логин"]'
 SEL_PASSWORD_INPUT = 'input[placeholder="Пароль"]'
 SEL_SUBMIT_BTN     = 'button[type="submit"]'
@@ -38,9 +36,9 @@ class Transaction:
 
 
 def _make_dedup_key(r: dict) -> str:
-    """Стабильный ключ дедупликации — не зависит от внутреннего Id банка."""
+    """Стабильный ключ дедупликации."""
     parts = [
-        str(r.get("payerUnp") or "").strip(),
+        str(r.get("payerUnp") or r.get("unp") or "").strip(),
         str(r.get("documentNumber") or r.get("numberDocument") or "").strip(),
         str(r.get("documentDate") or r.get("acceptDate") or "").strip()[:10],
         str(r.get("amount") or r.get("debit") or r.get("credit") or "").strip(),
@@ -55,149 +53,181 @@ async def fetch_incoming_transactions(days_back: int = 3) -> list[Transaction]:
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            locale="ru-RU",
-        )
+        context = await browser.new_context(viewport={"width": 1280, "height": 800}, locale="ru-RU")
         page = await context.new_page()
         try:
-            transactions = await _do_scrape(page, login, password, iban, days_back)
+            return await _do_scrape(page, login, password, iban, days_back)
         finally:
             await context.close()
             await browser.close()
-    return transactions
 
 
 async def _do_scrape(page, login, password, iban, days_back):
     days_back = max(days_back, 3)
 
-    log.info("Opening login page: %s", LOGIN_URL)
+    # === ЛОГИН ===
+    log.info("Opening login page")
     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
     await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=20_000)
     await asyncio.sleep(2)
-
-    log.info("Filling credentials")
     await page.fill(SEL_LOGIN_INPUT, login)
     await page.fill(SEL_PASSWORD_INPUT, password)
     await page.click(SEL_SUBMIT_BTN)
 
     try:
         await page.wait_for_function(
-            "() => !window.location.pathname.startsWith('/auth')",
-            timeout=30_000,
-        )
+            "() => !window.location.pathname.startsWith('/auth')", timeout=30_000)
     except PlaywrightTimeout:
-        raise RuntimeError("Login failed — bank rejected credentials")
+        raise RuntimeError("Login failed — credentials rejected")
 
-    log.info("Logged in. URL: %s", page.url)
+    log.info("Logged in, URL=%s", page.url)
     await asyncio.sleep(5)
 
-    # AccountId известен из exploration — 18067
+    # === ПЕРЕХВАТЧИК ОТВЕТА getAccountStatement ===
+    statement_responses: list[dict] = []
+
+    async def on_response(resp):
+        u = resp.url
+        if "/ibservices/account/getAccountStatement" in u and resp.status == 200:
+            try:
+                body = await resp.text()
+                statement_responses.append({"url": u, "body": body})
+                log.info("Captured getAccountStatement response, size=%d", len(body))
+            except Exception as e:
+                log.warning("Could not read response: %s", e)
+
+    page.on("response", lambda r: asyncio.create_task(on_response(r)))
+
+    # === КЛИК НА «Счета» ===
+    log.info("Clicking 'Счета'")
+    await page.get_by_text("Счета", exact=True).first.click(timeout=10_000)
+    await asyncio.sleep(4)
+
+    # === КЛИК НА СТРОКУ С НАШИМ IBAN ===
+    iban_target = iban.replace(" ", "")
+    iban_with_spaces = " ".join([iban_target[i:i+4] for i in range(0, len(iban_target), 4)])
+
+    log.info("Clicking account row with IBAN %s", iban_with_spaces[:18] + "…")
+    try:
+        await page.get_by_text(iban_with_spaces).first.click(timeout=10_000)
+        await asyncio.sleep(3)
+    except Exception as e:
+        raise RuntimeError(f"Could not click IBAN row: {e}")
+
+    # === КЛИК НА «Сформировать» в этой же строке ===
+    log.info("Clicking 'Сформировать' for our account")
+    # До этого мы видели что в строке нашего счёта есть кнопка «Выписка»
+    # После клика по строке счёт открывается, а под ним — кнопка «Сформировать»
+
+    # Сначала нажмём «Выписка» по строке счёта
+    clicked_vypiska = await page.evaluate("""(iban) => {
+        const rows = document.querySelectorAll('tr, [role=row], [class*=row]');
+        for (const row of rows) {
+            const txt = (row.innerText || '').replace(/\\s/g, '');
+            if (txt.includes(iban.replace(/\\s/g, ''))) {
+                const btn = row.querySelector('button');
+                if (btn) { btn.scrollIntoView(); btn.click(); return true; }
+            }
+        }
+        return false;
+    }""", iban_with_spaces)
+    log.info("  Выписка clicked: %s", clicked_vypiska)
+    await asyncio.sleep(7)
+    log.info("  URL: %s", page.url)
+
+    # Установим даты dateFrom и dateTo через URL — затем нажмём Сформировать
+    date_from = (date.today() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    date_to = date.today().strftime("%Y-%m-%d")
     account_id = int(os.environ.get("BANK_ACCOUNT_ID", "18067"))
     client_id = int(os.environ.get("BANK_CLIENT_ID", "80182"))
 
-    # Заходим на страницу выписки — там сервер выставляет нужную сессию/cookie
-    statement_page = f"{BASE_URL}/work-place/account-statement?accountId={account_id}&clientId={client_id}"
-    log.info("Navigating to statement page to set session: %s", statement_page)
-    await page.goto(statement_page, wait_until="domcontentloaded", timeout=30_000)
-    await asyncio.sleep(5)
+    statement_url = f"{BASE_URL}/work-place/account-statement?accountId={account_id}&clientId={client_id}&dateFrom={date_from}&dateTo={date_to}"
+    log.info("Going to statement URL with dates: %s", statement_url)
+    await page.goto(statement_url, wait_until="domcontentloaded", timeout=30_000)
+    await asyncio.sleep(7)
 
-    date_from = (date.today() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    date_to = date.today().strftime("%Y-%m-%d")
+    # === КЛИК «Сформировать» ===
+    clicked = await page.evaluate("""(label) => {
+        const btns = document.querySelectorAll('button, [role=button], a, [type=submit]');
+        for (const b of btns) {
+            if ((b.innerText || '').trim() === label && b.offsetParent !== null) {
+                b.scrollIntoView(); b.click(); return true;
+            }
+        }
+        return false;
+    }""", "Сформировать")
+    log.info("  Сформировать clicked: %s", clicked)
+    await asyncio.sleep(15)  # ждём загрузку выписки
 
-    log.info("Calling getAccountStatement for accountId=%s, %s..%s",
-             account_id, date_from, date_to)
-
-    js_call = """async ({accountId, dateFrom, dateTo}) => {
-        const body = {
-            sort: {columnName: "acceptDate", columnValue: "asc"},
-            sortList: [{columnName: "acceptDate", columnValue: "asc"}],
-            filterLike: [],
-            numberOfPage: 1,
-            itemsPerPage: 500,
-            dateFrom: dateFrom,
-            dateTo: dateTo,
-            customerAccountId: accountId,
-            isWithRevaluation: true,
-            correspondentAccountFilter: {},
-        };
-        const r = await fetch('/ibservices/account/getAccountStatement', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body),
-            credentials: 'include',
-        });
-        const text = await r.text();
-        return {status: r.status, body: text};
-    }"""
-
-    result = await page.evaluate(js_call, {
-        "accountId": account_id, "dateFrom": date_from, "dateTo": date_to,
-    })
-    log.info("getAccountStatement HTTP %s, body size=%d",
-             result["status"], len(result["body"]))
-
-    if result["status"] != 200:
-        log.error("Bad response: %s", result["body"][:500])
+    # === ОБРАБОТКА ПЕРЕХВАЧЕННЫХ ОТВЕТОВ ===
+    if not statement_responses:
+        log.warning("No getAccountStatement responses captured!")
+        # Запасной вариант — пробуем дёрнуть API из контекста страницы
         return []
 
-    data = json.loads(result["body"])
+    # Берём ответ с самым большим body (там вероятно operations)
+    best = max(statement_responses, key=lambda r: len(r["body"]))
+    log.info("Using response, size=%d, total captured=%d",
+             len(best["body"]), len(statement_responses))
+
+    data = json.loads(best["body"])
     if data.get("errorInfo", {}).get("error") != "0":
         log.error("Bank error: %s", data.get("errorInfo"))
         return []
 
-    # Дамп для отладки структуры (первые 3000 знаков уже хватит)
-    log.info("Response summary: items=%s, opening=%s, closing=%s",
+    log.info("Top-level keys: %s", sorted(data.keys()))
+    log.info("items=%s, opening=%s, closing=%s",
              data.get("items"), data.get("openingBalance"), data.get("closingBalance"))
 
-    # Ключевые поля могут лежать в разных полях response — анализируем
-    log.info("Top-level keys: %s", sorted(data.keys()))
-
-    # Ищем массив операций — называется по-разному в разных банках
+    # Ищем массив операций
     operations = None
-    for key in ("operations", "operationList", "items_data", "rows", "list", "gridRows", "statementList"):
+    for key in ("operations", "operationList", "items_data", "rows", "list",
+                "gridRows", "statementList", "statementRows", "statement",
+                "accountStatementList", "accountStatement"):
         if isinstance(data.get(key), list):
             operations = data[key]
-            log.info("Operations found under key '%s', count=%d", key, len(operations))
+            log.info("Operations found under '%s', count=%d", key, len(operations))
             break
 
     if operations is None:
-        # Попробуем найти любой ключ со списком dict-объектов
+        # Любой непустой список dict
         for k, v in data.items():
             if isinstance(v, list) and v and isinstance(v[0], dict):
-                log.info("Possible operations list under '%s' (size=%d)", k, len(v))
+                log.info("Possible operations list under '%s' (size=%d), first keys=%s",
+                         k, len(v), sorted(v[0].keys())[:10])
                 if operations is None:
                     operations = v
                     break
 
     if not operations:
-        # Дампим всё чтобы увидеть структуру
-        log.warning("No operations array found! Full response (first 3000 chars):")
-        log.warning(json.dumps(data, ensure_ascii=False, indent=2)[:3000])
+        log.warning("No operations found. Full response keys: %s", sorted(data.keys()))
+        log.warning("First 3000 chars of body: %s", best["body"][:3000])
         return []
 
-    # Дампим первую операцию для понимания структуры
-    if operations:
-        log.info("=== First operation (full structure) ===")
-        log.info(json.dumps(operations[0], ensure_ascii=False, indent=2)[:1500])
+    log.info("=== First operation (dict keys): %s ===", sorted(operations[0].keys()))
+    log.info("First operation values: %s",
+             json.dumps(operations[0], ensure_ascii=False)[:2000])
 
     # Парсим входящие
-    iban_target = iban.replace(" ", "")
     incoming = []
     for op in operations:
-        # Пока считаем что приходящие — у которых credit > 0
         credit = op.get("credit") or op.get("creditAmount") or op.get("incomingAmount")
-        if credit and float(str(credit).replace(",", ".") or 0) > 0:
+        try:
+            credit_val = float(str(credit).replace(",", ".")) if credit else 0
+        except (ValueError, TypeError):
+            credit_val = 0
+        if credit_val > 0:
             tx = Transaction(
                 transaction_id=str(op.get("id") or op.get("operationId") or ""),
                 dedup_key=_make_dedup_key(op),
-                booking_date=str(op.get("acceptDate") or op.get("operationDate") or "")[:10],
+                booking_date=str(op.get("acceptDate") or op.get("documentDate") or "")[:10],
                 amount=str(credit),
                 currency=op.get("currency") or "BYN",
-                counterparty=str(op.get("payerName") or op.get("correspondentName") or "Неизвестно"),
+                counterparty=str(op.get("payerName") or op.get("correspondentName")
+                                 or op.get("partnerName") or "Неизвестно"),
                 purpose=str(op.get("paymentPurpose") or op.get("purpose") or "—"),
             )
             incoming.append(tx)
 
-    log.info("Filtered to %d incoming transactions", len(incoming))
+    log.info("Filtered %d incoming transactions", len(incoming))
     return incoming
