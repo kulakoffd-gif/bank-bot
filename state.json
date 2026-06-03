@@ -30,10 +30,10 @@
     "700088503|1553|2026-06-01|50000.00",
     "700088503|1571|2026-06-02|4060.00"
   ],
-  "last_telegram_update_id": 673453981,
+  "last_telegram_update_id": 673453982,
   "is_paused": false,
-  "last_check_at": "2026-06-03T13:51:25.750038+00:00",
-  "last_check_result": "ошибка: Page.goto: Timeout 30000ms exceeded.\nCall log:\nnavigating to \"https://dcsc.belarusbank.by/auth\", waiting until \"domcontentloaded\"\n",
+  "last_check_at": "2026-06-03T19:06:37.101978+00:00",
+  "last_check_result": "новых поступлений: 0",
   "recipients": [
     -1003944910697
   ]
