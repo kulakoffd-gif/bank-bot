@@ -36,12 +36,19 @@ class Transaction:
 
 
 def _make_dedup_key(r: dict) -> str:
-    """Стабильный ключ дедупликации."""
+    """Стабильный ключ дедупликации.
+
+    Для входящего платежа на нашем счёте:
+      - correspondentUNP = УНП отправителя (контрагент)
+      - documentNumber   = номер платёжки
+      - documentDate     = дата платёжки
+      - amount           = сумма
+    """
     parts = [
-        str(r.get("payerUnp") or r.get("unp") or "").strip(),
-        str(r.get("documentNumber") or r.get("numberDocument") or "").strip(),
-        str(r.get("documentDate") or r.get("acceptDate") or "").strip()[:10],
-        str(r.get("amount") or r.get("debit") or r.get("credit") or "").strip(),
+        str(r.get("correspondentUNP") or r.get("payerUnp") or "").strip(),
+        str(r.get("documentNumber") or "").strip(),
+        str(r.get("documentDate") or r.get("docDate") or r.get("acceptDate") or "").strip()[:10],
+        str(r.get("amount") or "").strip(),
     ]
     return "|".join(parts)
 
