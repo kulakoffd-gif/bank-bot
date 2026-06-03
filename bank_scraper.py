@@ -224,10 +224,60 @@ async def _do_scrape(
 
     log.info("URL after account click: %s", page.url)
 
+    # ── ШАГ 2.5: пробуем double-click + ищем кнопки которые могли появиться ──
+    log.info("=== STEP 2.5: Looking for actions on selected account ===")
+
+    # Перечисляем все видимые кнопки (могли появиться после выделения строки)
+    after_select_buttons = await page.evaluate("""() => {
+        return Array.from(document.querySelectorAll('button, [role=button], a, [class*=btn]'))
+            .filter(el => el.offsetParent !== null)
+            .map(el => ({
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || '').trim().slice(0, 60),
+                title: el.getAttribute('title') || '',
+                ariaLabel: el.getAttribute('aria-label') || '',
+                disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
+            }))
+            .filter(b => b.text || b.title || b.ariaLabel);
+    }""")
+    log.info("Action buttons visible (%d):", len(after_select_buttons))
+    for b in after_select_buttons[:40]:
+        log.info("  [%s] text='%s' title='%s' aria='%s' disabled=%s",
+                 b['tag'], b['text'], b['title'], b['ariaLabel'], b['disabled'])
+
+    # Пробуем double-click на ряду счёта — это часто открывает детали в табличных интерфейсах
+    log.info("=== STEP 2.6: Double-click on account row ===")
+    iban_target = os.environ.get("BANK_ACCOUNT_IBAN", "").replace(" ", "")
+    iban_with_spaces = " ".join([iban_target[i:i+4] for i in range(0, len(iban_target), 4)])
+    try:
+        row = page.get_by_text(iban_with_spaces).first
+        if await row.count() > 0:
+            await row.dblclick(timeout=5000)
+            await asyncio.sleep(4)
+            log.info("After dblclick URL: %s", page.url)
+            await page.screenshot(path="/tmp/04_after_dblclick.png", full_page=True)
+    except Exception as e:
+        log.warning("dblclick failed: %s", str(e)[:120])
+
+    # Пробуем кликнуть на любые кнопки выписки/операций
+    log.info("=== STEP 2.7: Try Выписка/Операции buttons ===")
+    for label in ["Выписка", "Выписку", "Операции", "Движение", "Получить выписку", "Подробнее"]:
+        try:
+            loc = page.get_by_text(label, exact=False).first
+            if await loc.count() > 0:
+                log.info("Trying button: %s", label)
+                await loc.click(timeout=5000)
+                await asyncio.sleep(4)
+                log.info("  After click URL: %s", page.url)
+                await page.screenshot(path=f"/tmp/05_after_{label}.png", full_page=True)
+                break
+        except Exception as e:
+            log.info("  '%s' failed: %s", label, str(e)[:80])
+
     # ── ШАГ 3: пассивное наблюдение API после открытия страницы счетов ──
     await asyncio.sleep(5)
-    await page.screenshot(path="/tmp/05_settled.png", full_page=True)
-    with open("/tmp/05_settled.html", "w") as f:
+    await page.screenshot(path="/tmp/06_settled.png", full_page=True)
+    with open("/tmp/06_settled.html", "w") as f:
         f.write(await page.content())
 
     # Дамп всех captured API calls (это и есть РЕАЛЬНЫЕ endpoints, которые использует SPA)
