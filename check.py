@@ -36,35 +36,55 @@ def format_payment(tx: Transaction, routing_info: str = "") -> str:
     return body
 
 
-def resolve_routing(tx: Transaction, st: dict) -> tuple[list[int], str]:
-    """Определяет кому слать уведомление и текст-аннотацию.
+def resolve_routing(tx: Transaction, st: dict) -> tuple[list[int], str, str]:
+    """Определяет кому слать уведомление о платеже.
 
     Returns:
-        (additional_recipients, routing_info_text)
+        (manager_chat_ids, admin_copy_note, manager_label)
 
-    Главный получатель (админ) и подписчики канала добавляются ВСЕГДА
-    в broadcast — здесь возвращаем только МЕНЕДЖЕРОВ из AmoCRM.
+    - manager_chat_ids — telegram_chat_id ответственного менеджера (список из 0 или 1)
+    - admin_copy_note — текст для админа («Копия отправлена: ...»)
+    - manager_label — текст для самого менеджера (контекст клиента)
     """
-    if not amo_client.is_configured() or not tx.payer_unp:
-        return [], ""
+    if not amo_client.is_configured():
+        return [], "📬 <i>Копия отправлена:</i> только тебе и в канал (AmoCRM не подключён)", ""
+
+    if not tx.payer_unp:
+        return [], "📬 <i>Копия отправлена:</i> только тебе и в канал (УНП плательщика не определён)", ""
 
     company = amo_client.find_company_by_unp(tx.payer_unp)
     if not company:
-        return [], f"⚠️ <i>Клиент УНП {tx.payer_unp} не найден в AmoCRM</i>"
+        return [], (
+            f"📬 <i>Копия отправлена:</i> <b>никому</b> — клиент с УНП "
+            f"<code>{tx.payer_unp}</code> отсутствует в AmoCRM"
+        ), ""
 
     amo_user_id = company.get("responsible_user_id")
     company_name = company.get("name", "")
+
+    # Получим имя менеджера для красивого вывода
+    manager_name = "?"
+    if amo_user_id:
+        user_info = amo_client.get_user_info(int(amo_user_id))
+        if user_info:
+            manager_name = user_info.get("name", "?")
 
     routing = st.get("manager_routing", {})
     manager_chat_id = routing.get(str(amo_user_id))
 
     if not manager_chat_id:
         return [], (
-            f"📇 <i>Клиент в AmoCRM: {company_name}</i>\n"
-            f"⚠️ <i>Менеджер (AmoCRM id={amo_user_id}) не привязан к Telegram</i>"
-        )
+            f"📇 <i>Клиент в AmoCRM:</i> {company_name}\n"
+            f"📬 <i>Копия отправлена:</i> <b>никому</b> — менеджер "
+            f"{manager_name} (AmoCRM id={amo_user_id}) не привязан к Telegram"
+        ), ""
 
-    return [int(manager_chat_id)], f"📇 <i>Клиент: {company_name}</i>"
+    return (
+        [int(manager_chat_id)],
+        f"📇 <i>Клиент:</i> {company_name}\n"
+        f"📬 <i>Копия отправлена:</i> <b>{manager_name}</b>",
+        f"📇 <i>Клиент:</i> {company_name}",
+    )
 
 
 def format_status(st: dict) -> str:
@@ -430,22 +450,25 @@ async def do_bank_check(st: dict) -> str:
         if is_first_run:
             log.info("Initial run: marking key=%s (id=%s) as seen", key, tx.transaction_id)
         else:
-            # Определяем кому слать (менеджер из AmoCRM) и текст-пометку
-            extra_recipients, routing_note = resolve_routing(tx, st)
+            # Определяем кому слать
+            manager_chats, admin_note, manager_note = resolve_routing(tx, st)
 
-            # Подключаем: канал/общие подписчики + менеджер
-            all_extras = list(st.get("recipients", [])) + extra_recipients
-            # Уникализируем сохраняя порядок
-            seen_set = set()
-            uniq_extras = []
-            for r in all_extras:
-                if r not in seen_set:
-                    seen_set.add(r)
-                    uniq_extras.append(r)
+            # 1. АДМИНУ — с пометкой кому ушла копия
+            telegram_io.send_to_admin(format_payment(tx, admin_note))
 
-            telegram_io.broadcast(format_payment(tx, routing_note), uniq_extras)
+            # 2. КАНАЛАМ/доп. подписчикам — чистое сообщение (без аннотации)
+            for recipient in st.get("recipients", []):
+                telegram_io._post(recipient, format_payment(tx), with_keyboard=False)
+
+            # 3. МЕНЕДЖЕРУ (если есть) — с указанием клиента
+            for manager_chat in manager_chats:
+                if manager_chat == telegram_io.ADMIN_CHAT_ID:
+                    continue  # админу уже отправили
+                telegram_io._post(manager_chat, format_payment(tx, manager_note),
+                                  with_keyboard=False)
+
             new_count += 1
-            log.info("Notified about tx %s, routed to extras=%s", key, uniq_extras)
+            log.info("Notified about tx %s, manager_chats=%s", key, manager_chats)
         seen.add(key)
 
     st["seen_transactions"] = sorted(seen)
