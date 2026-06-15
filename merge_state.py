@@ -3,11 +3,14 @@
 Используется в commit-step workflow для разрешения race condition,
 когда два прогона одновременно пытаются обновить state.json.
 
-Стратегия:
-- seen_transactions: объединение (union) — никаких потерь дедуп-ключей
-- last_telegram_update_id: максимум (старшее offset побеждает)
-- остальные поля (is_paused, recipients, manager_routing, last_check_*):
-  берутся из нашего (свежего) прогона
+Стратегия слияния (по полю):
+- seen_transactions: UNION (никогда не теряем дедуп-ключи)
+- last_telegram_update_id: MAX (offset монотонно растёт)
+- last_check_at, last_check_result: LOCAL (свежий результат прогона)
+- recipients, manager_routing, is_paused: REMOTE (управляются командами
+  пользователя; если в параллельном прогоне их изменили, эти изменения
+  важнее, чем стейл-копия в нашем checkout'е)
+- остальные неизвестные поля: REMOTE (безопасный default)
 """
 
 import json
@@ -26,7 +29,7 @@ def main() -> int:
     with open(local_path, encoding="utf-8") as f:
         local = json.load(f)
 
-    merged = dict(local)
+    merged = dict(remote)
 
     merged["seen_transactions"] = sorted(
         set(remote.get("seen_transactions", [])) | set(local.get("seen_transactions", []))
@@ -35,6 +38,10 @@ def main() -> int:
         remote.get("last_telegram_update_id", 0) or 0,
         local.get("last_telegram_update_id", 0) or 0,
     )
+
+    for k in ("last_check_at", "last_check_result"):
+        if local.get(k):
+            merged[k] = local[k]
 
     with open("state.json", "w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2, ensure_ascii=False)
