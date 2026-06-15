@@ -91,7 +91,7 @@ def format_status(st: dict) -> str:
     state_icon = "⏸ <b>на паузе</b>" if st["is_paused"] else "▶️ <b>активен</b>"
     last_at = st.get("last_check_at") or "—"
     last_res = st.get("last_check_result") or "—"
-    recipients_n = 1 + len(st.get("recipients", []))
+    recipients_n = 1 + len(st.get("co_admins", [])) + len(st.get("recipients", []))
     return (
         "<b>📊 Статус бота</b>\n\n"
         f"Состояние: {state_icon}\n"
@@ -453,17 +453,23 @@ async def do_bank_check(st: dict) -> str:
             # Определяем кому слать
             manager_chats, admin_note, manager_note = resolve_routing(tx, st)
 
-            # 1. АДМИНУ — с пометкой кому ушла копия
-            telegram_io.send_to_admin(format_payment(tx, admin_note))
+            # 1. АДМИНУ + co-admins (полные копии всех платежей с тем же admin_note)
+            admins = [telegram_io.ADMIN_CHAT_ID] + list(st.get("co_admins", []))
+            for admin_chat in admins:
+                telegram_io._post(admin_chat, format_payment(tx, admin_note),
+                                  with_keyboard=False)
 
             # 2. КАНАЛАМ/доп. подписчикам — чистое сообщение (без аннотации)
             for recipient in st.get("recipients", []):
+                if recipient in admins:
+                    continue
                 telegram_io._post(recipient, format_payment(tx), with_keyboard=False)
 
-            # 3. МЕНЕДЖЕРУ (если есть) — с указанием клиента
+            # 3. МЕНЕДЖЕРУ (если есть) — с указанием клиента;
+            #    скипаем, если он уже получил копию как admin/co-admin
             for manager_chat in manager_chats:
-                if manager_chat == telegram_io.ADMIN_CHAT_ID:
-                    continue  # админу уже отправили
+                if manager_chat in admins:
+                    continue
                 telegram_io._post(manager_chat, format_payment(tx, manager_note),
                                   with_keyboard=False)
 
