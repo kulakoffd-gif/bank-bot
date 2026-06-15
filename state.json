@@ -72,9 +72,7 @@
   "is_paused": false,
   "last_check_at": "2026-06-15T13:39:59.128987+00:00",
   "last_check_result": "новых поступлений: 6",
-  "recipients": [
-    -1003944910697
-  ],
+  "recipients": [],
   "manager_routing": {
     "11527566": 1790457718,
     "11527618": 5545923014,
