@@ -55,6 +55,8 @@ jobs:
           BANK_LOGIN:         ${{ secrets.BANK_LOGIN }}
           BANK_PASSWORD:      ${{ secrets.BANK_PASSWORD }}
           BANK_ACCOUNT_IBAN:  ${{ secrets.BANK_ACCOUNT_IBAN }}
+          AMO_TOKEN:          ${{ secrets.AMO_TOKEN }}
+          AMO_SUBDOMAIN:      ${{ secrets.AMO_SUBDOMAIN }}
         run: python check.py
 
       - name: Upload debug HTML (statements page)
