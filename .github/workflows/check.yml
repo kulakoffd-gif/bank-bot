@@ -72,14 +72,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      - name: Commit updated state
+      - name: Commit updated state (race-safe)
         run: |
+          set -e
           git config user.name  "bank-bot"
           git config user.email "bank-bot@users.noreply.github.com"
-          git add state.json
-          if git diff --cached --quiet; then
-            echo "No state changes"
-          else
+
+          # Сохраняем наш свежий state перед любыми pull/reset
+          cp state.json /tmp/our_state.json
+
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+
+            python3 merge_state.py /tmp/our_state.json
+
+            if git diff --quiet -- state.json; then
+              echo "No state changes after merge (attempt $attempt)"
+              exit 0
+            fi
+
+            git add state.json
             git commit -m "state: update [skip ci]"
-            git push
-          fi
+
+            if git push; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+
+            echo "Push rejected on attempt $attempt — retrying with fresh main…"
+            sleep 1
+          done
+
+          echo "Push failed after 3 attempts" >&2
+          exit 1
