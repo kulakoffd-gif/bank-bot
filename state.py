@@ -42,4 +42,8 @@ def _default() -> dict:
         "last_check_at": None,
         "last_check_result": None,
         "recipients": [],  # доп. получатели уведомлений (кроме админа)
+        # Маппинг {amocrm_user_id: telegram_chat_id} — кому из AmoCRM
+        # соответствует какой Telegram-аккаунт. Используется для роутинга
+        # уведомлений по ответственному за клиента менеджеру.
+        "manager_routing": {},
     }

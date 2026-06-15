@@ -6,6 +6,7 @@ import re
 import sys
 from datetime import datetime, timezone
 
+import amo_client
 import state
 import telegram_io
 from bank_scraper import fetch_incoming_transactions, Transaction
@@ -22,14 +23,48 @@ log = logging.getLogger(__name__)
 
 # ─────────────────────────── ФОРМАТИРОВАНИЕ ───────────────────────────
 
-def format_payment(tx: Transaction) -> str:
-    return (
+def format_payment(tx: Transaction, routing_info: str = "") -> str:
+    body = (
         "💰 <b>Новое поступление</b>\n\n"
         f"<b>Сумма:</b> {tx.amount} {tx.currency}\n"
         f"<b>Дата:</b> {tx.booking_date}\n"
         f"<b>От:</b> {tx.counterparty}\n"
         f"<b>Назначение:</b> {tx.purpose}"
     )
+    if routing_info:
+        body += f"\n\n{routing_info}"
+    return body
+
+
+def resolve_routing(tx: Transaction, st: dict) -> tuple[list[int], str]:
+    """Определяет кому слать уведомление и текст-аннотацию.
+
+    Returns:
+        (additional_recipients, routing_info_text)
+
+    Главный получатель (админ) и подписчики канала добавляются ВСЕГДА
+    в broadcast — здесь возвращаем только МЕНЕДЖЕРОВ из AmoCRM.
+    """
+    if not amo_client.is_configured() or not tx.payer_unp:
+        return [], ""
+
+    company = amo_client.find_company_by_unp(tx.payer_unp)
+    if not company:
+        return [], f"⚠️ <i>Клиент УНП {tx.payer_unp} не найден в AmoCRM</i>"
+
+    amo_user_id = company.get("responsible_user_id")
+    company_name = company.get("name", "")
+
+    routing = st.get("manager_routing", {})
+    manager_chat_id = routing.get(str(amo_user_id))
+
+    if not manager_chat_id:
+        return [], (
+            f"📇 <i>Клиент в AmoCRM: {company_name}</i>\n"
+            f"⚠️ <i>Менеджер (AmoCRM id={amo_user_id}) не привязан к Telegram</i>"
+        )
+
+    return [int(manager_chat_id)], f"📇 <i>Клиент: {company_name}</i>"
 
 
 def format_status(st: dict) -> str:
@@ -85,8 +120,45 @@ WELCOME_TEXT = (
     "<b>Команды для управления получателями:</b>\n"
     "<code>/add 123456789</code> — добавить получателя\n"
     "<code>/remove 123456789</code> — удалить получателя\n"
-    "<code>/recipients</code> — список и инструкция"
+    "<code>/recipients</code> — список и инструкция\n\n"
+    "<b>Менеджеры (AmoCRM роутинг):</b>\n"
+    "<code>/managers</code> — список менеджеров AmoCRM и их Telegram-привязки\n"
+    "<code>/link_manager &lt;amocrm_id&gt; &lt;telegram_id&gt;</code> — привязать менеджера\n"
+    "<code>/unlink_manager &lt;amocrm_id&gt;</code> — снять привязку"
 )
+
+
+def format_managers_help(st: dict) -> str:
+    """Список менеджеров AmoCRM с их Telegram-привязками."""
+    routing = st.get("manager_routing", {})
+
+    if not amo_client.is_configured():
+        return (
+            "❌ <b>AmoCRM не настроен</b>\n\n"
+            "Не заданы переменные окружения AMO_TOKEN или AMO_SUBDOMAIN."
+        )
+
+    users = amo_client.list_users()
+    if not users:
+        return "❌ Не удалось получить список менеджеров из AmoCRM."
+
+    lines = ["<b>👤 Менеджеры AmoCRM</b>\n"]
+    for u in users:
+        amo_id = str(u.get("id"))
+        name = u.get("name", "?")
+        email = u.get("email", "")
+        tg = routing.get(amo_id)
+        if tg:
+            lines.append(f"✅ <b>{name}</b>\n  AmoCRM <code>{amo_id}</code> → Telegram <code>{tg}</code>")
+        else:
+            lines.append(f"⬜ <b>{name}</b>\n  AmoCRM <code>{amo_id}</code> — не привязан\n  {email}")
+    lines.append("")
+    lines.append("<b>Как привязать:</b>")
+    lines.append("1. Менеджер открывает @userinfobot → /start → получает свой Telegram ID")
+    lines.append("2. <b>ОБЯЗАТЕЛЬНО</b> открывает @Banking_incomes_bot → /start")
+    lines.append("3. Ты выполняешь: <code>/link_manager AMO_ID TELEGRAM_ID</code>")
+    lines.append("   например: <code>/link_manager 11527566 123456789</code>")
+    return "\n".join(lines)
 
 
 # ────────────────────────── ОБРАБОТКА КОМАНД ──────────────────────────
@@ -155,6 +227,90 @@ def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) ->
 
         elif cmd == "/recipients":
             telegram_io.send_to_admin(format_recipients_help(st), with_keyboard=True)
+
+        elif cmd == "/managers":
+            telegram_io.send_to_admin(format_managers_help(st), with_keyboard=True)
+
+        elif cmd == "/link_manager":
+            # /link_manager 11527566 123456789
+            nums = re.findall(r"-?\d+", args)
+            if len(nums) < 2:
+                telegram_io.send_to_admin(
+                    "❌ Формат: <code>/link_manager amocrm_id telegram_id</code>\n"
+                    "Пример: <code>/link_manager 11527566 123456789</code>\n\n"
+                    "Список менеджеров — /managers",
+                    with_keyboard=True,
+                )
+                continue
+            amo_id, tg_id = nums[0], int(nums[1])
+            # Проверим что менеджер существует в AmoCRM
+            user_info = amo_client.get_user_info(int(amo_id))
+            if not user_info:
+                telegram_io.send_to_admin(
+                    f"⚠️ Менеджер AmoCRM <code>{amo_id}</code> не найден. "
+                    f"Список доступных — /managers",
+                    with_keyboard=True,
+                )
+                continue
+            # Проверим что бот может писать менеджеру
+            ok, err = telegram_io._post(
+                tg_id,
+                f"🔔 Привет! Тебя только что подключили к боту уведомлений о платежах в "
+                f"ООО «ЭкоРан Про». Тебе будут приходить уведомления о новых поступлениях "
+                f"от твоих клиентов (по данным AmoCRM).",
+                with_keyboard=False,
+            )
+            if not ok:
+                msg_lower = err.lower()
+                if "blocked" in msg_lower or "chat not found" in msg_lower or "forbidden" in msg_lower:
+                    telegram_io.send_to_admin(
+                        f"❌ Не могу написать менеджеру <code>{tg_id}</code>.\n\n"
+                        f"<b>Причина:</b> он ещё не нажал Start у нашего бота.\n\n"
+                        f"<b>Что делать:</b> {user_info.get('name', 'менеджер')} должен открыть "
+                        f"<b>@Banking_incomes_bot</b> в Telegram и нажать <b>Start</b>. "
+                        f"После этого повтори команду:\n"
+                        f"<code>/link_manager {amo_id} {tg_id}</code>",
+                        with_keyboard=True,
+                    )
+                else:
+                    telegram_io.send_to_admin(
+                        f"❌ Ошибка отправки: <code>{err}</code>",
+                        with_keyboard=True,
+                    )
+                continue
+
+            st.setdefault("manager_routing", {})[str(amo_id)] = tg_id
+            telegram_io.send_to_admin(
+                f"✅ Привязал.\n\n"
+                f"<b>{user_info.get('name', '?')}</b> (AmoCRM <code>{amo_id}</code>) "
+                f"→ Telegram <code>{tg_id}</code>\n\n"
+                f"Теперь все платежи от клиентов, за которых он отвечает в AmoCRM, "
+                f"будут приходить ему лично.",
+                with_keyboard=True,
+            )
+
+        elif cmd == "/unlink_manager":
+            nums = re.findall(r"-?\d+", args)
+            if not nums:
+                telegram_io.send_to_admin(
+                    "❌ Формат: <code>/unlink_manager amocrm_id</code>\n"
+                    "Пример: <code>/unlink_manager 11527566</code>",
+                    with_keyboard=True,
+                )
+                continue
+            amo_id = nums[0]
+            routing = st.setdefault("manager_routing", {})
+            if amo_id not in routing:
+                telegram_io.send_to_admin(
+                    f"ℹ️ Менеджер <code>{amo_id}</code> и так не привязан.",
+                    with_keyboard=True,
+                )
+                continue
+            tg_id = routing.pop(amo_id)
+            telegram_io.send_to_admin(
+                f"✅ Привязка снята: AmoCRM <code>{amo_id}</code> ↛ Telegram <code>{tg_id}</code>",
+                with_keyboard=True,
+            )
 
         elif cmd == "/add":
             new_id = _parse_int_arg(args)
@@ -274,8 +430,22 @@ async def do_bank_check(st: dict) -> str:
         if is_first_run:
             log.info("Initial run: marking key=%s (id=%s) as seen", key, tx.transaction_id)
         else:
-            telegram_io.broadcast(format_payment(tx), st.get("recipients", []))
+            # Определяем кому слать (менеджер из AmoCRM) и текст-пометку
+            extra_recipients, routing_note = resolve_routing(tx, st)
+
+            # Подключаем: канал/общие подписчики + менеджер
+            all_extras = list(st.get("recipients", [])) + extra_recipients
+            # Уникализируем сохраняя порядок
+            seen_set = set()
+            uniq_extras = []
+            for r in all_extras:
+                if r not in seen_set:
+                    seen_set.add(r)
+                    uniq_extras.append(r)
+
+            telegram_io.broadcast(format_payment(tx, routing_note), uniq_extras)
             new_count += 1
+            log.info("Notified about tx %s, routed to extras=%s", key, uniq_extras)
         seen.add(key)
 
     st["seen_transactions"] = sorted(seen)

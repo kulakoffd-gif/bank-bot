@@ -32,6 +32,7 @@ class Transaction:
     amount: str
     currency: str
     counterparty: str
+    payer_unp: str  # УНП плательщика — для матчинга с AmoCRM
     purpose: str
 
 
@@ -247,6 +248,7 @@ async def _do_scrape(page, login, password, iban, days_back):
                 amount=str(amt),
                 currency=op.get("currencyIso") or op.get("currency") or "BYN",
                 counterparty=str(op.get("correspondentName") or "Неизвестно"),
+                payer_unp=str(op.get("correspondentUNP") or "").strip(),
                 purpose=str(op.get("paymentPurpose") or "—"),
             )
             incoming.append(tx)
