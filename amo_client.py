@@ -64,36 +64,46 @@ def _http_get(path: str, params: dict | None = None) -> dict | None:
 
 
 def find_company_by_unp(unp: str) -> dict | None:
-    """Найти компанию по УНП. Возвращает dict {id, name, responsible_user_id} или None."""
+    """Найти компанию по УНП. Возвращает dict {id, name, responsible_user_id} или None.
+
+    При нескольких компаниях с одним УНП (дубли в AmoCRM) выбирает самую свежую
+    по updated_at (или по id, если updated_at одинаковый). Это даёт стабильное
+    поведение, когда менеджер пересоздал карточку клиента — последняя побеждает.
+    """
     if not unp:
         return None
 
     unp_str = str(unp).strip()
-    # Проверка кэша
     now = time.time()
     cached = _cache.get(unp_str)
     if cached and (now - cached[0]) < CACHE_TTL_SEC:
         return cached[1]
 
     data = _http_get("/api/v4/companies", {"query": unp_str})
-    result: dict | None = None
+    matches: list[dict] = []
     if data:
-        companies = data.get("_embedded", {}).get("companies", [])
-        for c in companies:
+        for c in data.get("_embedded", {}).get("companies", []):
             for cf in (c.get("custom_fields_values") or []):
-                if cf.get("field_id") == AMO_UNP_FIELD_ID:
-                    for v in (cf.get("values") or []):
-                        if str(v.get("value")).strip() == unp_str:
-                            result = {
-                                "id": c.get("id"),
-                                "name": c.get("name", ""),
-                                "responsible_user_id": c.get("responsible_user_id"),
-                            }
-                            break
-                    if result:
-                        break
-            if result:
-                break
+                if cf.get("field_id") != AMO_UNP_FIELD_ID:
+                    continue
+                values = [str(v.get("value")).strip() for v in (cf.get("values") or [])]
+                if unp_str in values:
+                    matches.append(c)
+                    break
+
+    result: dict | None = None
+    if matches:
+        if len(matches) > 1:
+            cand = [(c.get("id"), c.get("name", ""), c.get("responsible_user_id")) for c in matches]
+            log.warning("AmoCRM: %d дублей по УНП %s → беру самую свежую. Кандидаты: %s",
+                        len(matches), unp_str, cand)
+        matches.sort(key=lambda c: (c.get("updated_at") or 0, c.get("id") or 0), reverse=True)
+        chosen = matches[0]
+        result = {
+            "id": chosen.get("id"),
+            "name": chosen.get("name", ""),
+            "responsible_user_id": chosen.get("responsible_user_id"),
+        }
 
     _cache[unp_str] = (now, result)
     return result
