@@ -78,8 +78,8 @@
   ],
   "last_telegram_update_id": 673453987,
   "is_paused": false,
-  "last_check_at": "2026-06-17T08:21:40.685849+00:00",
-  "last_check_result": "ошибка: Page.goto: Timeout 30000ms exceeded.\nCall log:\nnavigating to \"https://dcsc.belarusbank.by/auth\", waiting until \"domcontentloaded\"\n",
+  "last_check_at": "2026-06-17T08:36:58.646860+00:00",
+  "last_check_result": "новых поступлений: 0",
   "recipients": [],
   "manager_routing": {
     "11527566": 1790457718,
