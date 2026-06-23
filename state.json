@@ -95,8 +95,8 @@
   ],
   "last_telegram_update_id": 673453987,
   "is_paused": false,
-  "last_check_at": "2026-06-23T06:06:56.554952+00:00",
-  "last_check_result": "ошибка: Could not click IBAN row: Locator.click: Timeout 10000ms exceeded.\nCall log:\nwaiting for get_by_text(\"BY86 AKBB 3012 0041 0404 3400 0000\").first\n",
+  "last_check_at": "2026-06-23T06:36:46.502985+00:00",
+  "last_check_result": "новых поступлений: 0",
   "recipients": [],
   "manager_routing": {
     "11527566": 1790457718,
