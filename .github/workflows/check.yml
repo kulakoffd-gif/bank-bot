@@ -48,6 +48,16 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: python -m playwright install-deps chromium
 
+      # Прогоны сериализуются concurrency-группой bank-check, но actions/checkout
+      # берёт state.json на момент ТРИГГЕРА, а не свежую вершину main. Если два
+      # запуска сработали близко друг к другу, второй стартует со СТАРЫМ state.json
+      # и повторно шлёт уведомление об уже обработанном платеже. Подтягиваем
+      # актуальный state.json (коммит предыдущего прогона) перед проверкой.
+      - name: Sync latest committed state (prevent duplicate notifications)
+        run: |
+          git fetch origin main
+          git checkout origin/main -- state.json || echo "no state.json on origin yet"
+
       - name: Run bank check
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

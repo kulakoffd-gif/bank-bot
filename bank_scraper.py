@@ -36,6 +36,26 @@ class Transaction:
     purpose: str
 
 
+async def _dump_debug(page, tag: str) -> None:
+    """Сохранить скриншот + HTML страницы в /tmp для диагностики.
+
+    Файлы /tmp/<tag>.png и /tmp/<tag>.html заливаются как артефакты GitHub Actions
+    (шаг Upload debug HTML), чтобы можно было увидеть, как выглядит страница банка
+    в момент падения (например, новый экран запроса местоположения).
+    """
+    try:
+        await page.screenshot(path=f"/tmp/{tag}.png", full_page=True)
+    except Exception as e:
+        log.warning("Could not screenshot %s: %s", tag, e)
+    try:
+        html = await page.content()
+        with open(f"/tmp/{tag}.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        log.warning("Saved debug %s.html (url=%s, %d chars)", tag, page.url, len(html))
+    except Exception as e:
+        log.warning("Could not dump HTML %s: %s", tag, e)
+
+
 def _make_dedup_key(r: dict) -> str:
     """Стабильный ключ дедупликации.
 
@@ -61,7 +81,16 @@ async def fetch_incoming_transactions(days_back: int = 3) -> list[Transaction]:
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(viewport={"width": 1280, "height": 800}, locale="ru-RU")
+        # Банк с 2026-06-30 требует местоположение при входе — выдаём браузеру
+        # разрешение на геолокацию и координаты Минска, чтобы сайт не блокировал
+        # форму логина в ожидании доступа к геопозиции.
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            locale="ru-RU",
+            timezone_id="Europe/Minsk",
+            geolocation={"latitude": 53.9006, "longitude": 27.5590},  # Минск
+            permissions=["geolocation"],
+        )
         page = await context.new_page()
         try:
             return await _do_scrape(page, login, password, iban, days_back)
@@ -76,7 +105,14 @@ async def _do_scrape(page, login, password, iban, days_back):
     # === ЛОГИН ===
     log.info("Opening login page")
     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
-    await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=20_000)
+    try:
+        await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=20_000)
+    except PlaywrightTimeout:
+        # Поле логина не появилось — вероятно, новый экран банка (запрос
+        # местоположения / согласие). Сохраняем страницу для диагностики.
+        log.error("Login input not found — dumping page for diagnosis")
+        await _dump_debug(page, "login_fail")
+        raise
     await asyncio.sleep(2)
     await page.fill(SEL_LOGIN_INPUT, login)
     await page.fill(SEL_PASSWORD_INPUT, password)
@@ -120,6 +156,7 @@ async def _do_scrape(page, login, password, iban, days_back):
         await page.get_by_text(iban_with_spaces).first.click(timeout=10_000)
         await asyncio.sleep(3)
     except Exception as e:
+        await _dump_debug(page, "iban_fail")
         raise RuntimeError(f"Could not click IBAN row: {e}")
 
     # === КЛИК НА «Сформировать» в этой же строке ===
