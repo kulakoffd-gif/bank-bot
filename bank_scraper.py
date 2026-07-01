@@ -122,7 +122,12 @@ async def _do_scrape(page, login, password, iban, days_back):
         await page.wait_for_function(
             "() => !window.location.pathname.startsWith('/auth')", timeout=30_000)
     except PlaywrightTimeout:
-        raise RuntimeError("Login failed — credentials rejected")
+        # Форма отправлена, но остались на /auth. Возможно, новый экран банка
+        # (подтверждение местоположения / доп. проверка) или вход отклонён.
+        # Сохраняем страницу, чтобы увидеть, что именно показывает банк.
+        log.error("Still on /auth after submit — dumping page for diagnosis")
+        await _dump_debug(page, "login_submit_fail")
+        raise RuntimeError("Login failed — did not leave /auth (возможно, новый экран банка после ввода)")
 
     log.info("Logged in, URL=%s", page.url)
     await asyncio.sleep(5)
