@@ -126,7 +126,7 @@
   ],
   "last_telegram_update_id": 673453987,
   "is_paused": false,
-  "last_check_at": "2026-07-01T05:36:37.744239+00:00",
+  "last_check_at": "2026-07-01T05:51:56.501231+00:00",
   "last_check_result": "ошибка: Login failed — credentials rejected",
   "recipients": [],
   "manager_routing": {
