@@ -148,7 +148,7 @@
   ],
   "last_telegram_update_id": 673453987,
   "is_paused": false,
-  "last_check_at": "2026-07-03T13:06:39.804537+00:00",
+  "last_check_at": "2026-07-03T13:21:51.339167+00:00",
   "last_check_result": "ошибка: Login failed — did not leave /auth (возможно, новый экран банка после ввода)",
   "recipients": [],
   "manager_routing": {
