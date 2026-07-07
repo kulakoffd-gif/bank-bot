@@ -80,7 +80,7 @@ jobs:
             /tmp/*.json
             /tmp/*.txt
           if-no-files-found: ignore
-          retention-days: 1
+          retention-days: 5
 
       - name: Commit updated state (race-safe)
         run: |

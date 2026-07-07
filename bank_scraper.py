@@ -132,6 +132,21 @@ async def _do_scrape(page, login, password, iban, days_back):
     log.info("Logged in, URL=%s", page.url)
     await asyncio.sleep(5)
 
+    # === ЗАКРЫТЬ ВОЗМОЖНУЮ МОДАЛКУ ПОСЛЕ ВХОДА ===
+    # Банк периодически показывает окно (напр. «Пароль просрочен/истекает»,
+    # предупреждения), которое перекрывает меню и ломает клик по «Счета».
+    # Best-effort: жмём безопасные кнопки-«закрыть», если они есть.
+    for label in ("Пропустить", "Продолжить", "Закрыть", "Позже", "ОК", "Понятно"):
+        try:
+            btn = page.get_by_role("button", name=label, exact=True).first
+            if await btn.is_visible(timeout=1500):
+                await btn.click()
+                log.info("Dismissed post-login modal via '%s'", label)
+                await asyncio.sleep(2)
+                break
+        except Exception:
+            continue
+
     # === ПЕРЕХВАТЧИК ОТВЕТА getAccountStatement ===
     statement_responses: list[dict] = []
 
@@ -149,7 +164,14 @@ async def _do_scrape(page, login, password, iban, days_back):
 
     # === КЛИК НА «Счета» ===
     log.info("Clicking 'Счета'")
-    await page.get_by_text("Счета", exact=True).first.click(timeout=10_000)
+    try:
+        await page.get_by_text("Счета", exact=True).first.click(timeout=10_000)
+    except Exception as e:
+        # Не смогли нажать «Счета» — вероятно, новый экран/модалка банка после входа.
+        # Сохраняем страницу, чтобы увидеть, что показывает банк.
+        log.error("Could not click 'Счета' — dumping page for diagnosis")
+        await _dump_debug(page, "scheta_fail")
+        raise RuntimeError(f"Could not click 'Счета': {e}")
     await asyncio.sleep(4)
 
     # === КЛИК НА СТРОКУ С НАШИМ IBAN ===
