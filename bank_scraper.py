@@ -36,6 +36,74 @@ class Transaction:
     purpose: str
 
 
+# Заполняется _handle_post_login_modal, читается check.py:
+#   None — окна не было; иначе {"text": str, "screenshot": "/tmp/bank_notice.png"|""}
+LAST_NOTICE: dict | None = None
+
+# Кнопки, которыми безопасно ЗАКРЫТЬ окно банка (не «Прочитать»/«Изменить» —
+# они могут увести на другой экран).
+_MODAL_CLOSE_LABELS = ["Пропустить", "Продолжить", "Закрыть", "Позже", "ОК", "Понятно", "Ознакомлен"]
+
+
+async def _handle_post_login_modal(page) -> dict | None:
+    """Если после входа появилось окно банка — снять скриншот+текст и закрыть его.
+
+    Возвращает {"text", "screenshot"} если окно было, иначе None.
+    Сам скриншот/текст НЕ отправляет — это делает check.py (там дедуп по тексту,
+    чтобы не слать одно и то же объявление каждый прогон).
+    """
+    # Ищем текст окна: находим видимую кнопку-«закрыть» и поднимаемся к контейнеру-модалке.
+    try:
+        info = await page.evaluate(
+            """(labels) => {
+                const btns = [...document.querySelectorAll('button, [role=button]')];
+                let target = null;
+                for (const b of btns) {
+                    const t = (b.innerText || '').trim();
+                    if (labels.includes(t) && b.offsetParent !== null) { target = b; break; }
+                }
+                if (!target) return null;
+                let el = target;
+                for (let i = 0; i < 8 && el; i++) {
+                    const cls = (el.className || '') + '';
+                    const role = el.getAttribute && el.getAttribute('role');
+                    if (role === 'dialog' || /modal|dialog|popup/i.test(cls)) break;
+                    el = el.parentElement;
+                }
+                const box = el || target.closest('div');
+                return { text: (box ? box.innerText : '').trim().slice(0, 1500) };
+            }""",
+            _MODAL_CLOSE_LABELS,
+        )
+    except Exception as e:
+        log.warning("Modal detection failed: %s", e)
+        return None
+
+    if not info:
+        return None  # окна нет — обычный вход
+
+    notice = {"text": info.get("text", ""), "screenshot": "/tmp/bank_notice.png"}
+    log.info("Post-login modal detected (%d chars of text) — screenshotting", len(notice["text"]))
+    try:
+        await page.screenshot(path=notice["screenshot"], full_page=True)
+    except Exception as e:
+        log.warning("Could not screenshot modal: %s", e)
+        notice["screenshot"] = ""
+
+    # Закрываем окно, чтобы продолжить к «Счета».
+    for label in _MODAL_CLOSE_LABELS:
+        try:
+            btn = page.get_by_role("button", name=label, exact=True).first
+            if await btn.is_visible(timeout=1000):
+                await btn.click()
+                log.info("Closed post-login modal via '%s'", label)
+                await asyncio.sleep(2)
+                break
+        except Exception:
+            continue
+    return notice
+
+
 async def _dump_debug(page, tag: str) -> None:
     """Сохранить скриншот + HTML страницы в /tmp для диагностики.
 
@@ -132,20 +200,13 @@ async def _do_scrape(page, login, password, iban, days_back):
     log.info("Logged in, URL=%s", page.url)
     await asyncio.sleep(5)
 
-    # === ЗАКРЫТЬ ВОЗМОЖНУЮ МОДАЛКУ ПОСЛЕ ВХОДА ===
-    # Банк периодически показывает окно (напр. «Пароль просрочен/истекает»,
-    # предупреждения), которое перекрывает меню и ломает клик по «Счета».
-    # Best-effort: жмём безопасные кнопки-«закрыть», если они есть.
-    for label in ("Пропустить", "Продолжить", "Закрыть", "Позже", "ОК", "Понятно"):
-        try:
-            btn = page.get_by_role("button", name=label, exact=True).first
-            if await btn.is_visible(timeout=1500):
-                await btn.click()
-                log.info("Dismissed post-login modal via '%s'", label)
-                await asyncio.sleep(2)
-                break
-        except Exception:
-            continue
+    # === МОДАЛКА ПОСЛЕ ВХОДА: заснять → сообщить → закрыть ===
+    # Банк периодически показывает окно (объявления о тарифах, «Пароль истекает»
+    # и т.п.), которое перекрывает меню и ломает клик по «Счета». Прежде чем
+    # закрыть — снимаем скриншот и текст, чтобы админ не пропустил важное.
+    # Результат кладём в модульную LAST_NOTICE, дедуп/отправку делает check.py.
+    global LAST_NOTICE
+    LAST_NOTICE = await _handle_post_login_modal(page)
 
     # === ПЕРЕХВАТЧИК ОТВЕТА getAccountStatement ===
     statement_responses: list[dict] = []

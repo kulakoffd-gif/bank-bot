@@ -56,6 +56,26 @@ def send_to_admin(text: str, with_keyboard: bool = False) -> None:
     _post(ADMIN_CHAT_ID, text, with_keyboard=with_keyboard)
 
 
+def send_photo_to_admin(photo_path: str, caption: str = "") -> tuple[bool, str]:
+    """Отправить админу фото (например, скриншот окна банка) с подписью."""
+    try:
+        with open(photo_path, "rb") as f:
+            r = httpx.post(
+                f"{API}/sendPhoto",
+                data={"chat_id": ADMIN_CHAT_ID, "caption": caption[:1024], "parse_mode": "HTML"},
+                files={"photo": f},
+                timeout=30,
+            )
+        if r.status_code == 200:
+            return True, ""
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"description": r.text}
+        log.warning("Telegram sendPhoto HTTP %s: %s", r.status_code, body)
+        return False, body.get("description", f"HTTP {r.status_code}")
+    except Exception as exc:
+        log.error("Failed to send photo to admin: %s", exc)
+        return False, str(exc)
+
+
 def broadcast(text: str, extra_recipients: list[int]) -> dict:
     """Разослать сообщение админу + всем в списке. Возвращает статус по каждому."""
     results: dict[int, tuple[bool, str]] = {}

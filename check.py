@@ -1,12 +1,14 @@
 """Один прогон бота: опрос Telegram → команды → проверка банка → уведомления."""
 
 import asyncio
+import hashlib
 import logging
 import re
 import sys
 from datetime import datetime, timezone
 
 import amo_client
+import bank_scraper
 import state
 import telegram_io
 from bank_scraper import fetch_incoming_transactions, Transaction
@@ -417,16 +419,56 @@ def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) ->
 
 # ────────────────────────────── ПРОВЕРКА БАНКА ──────────────────────────
 
+def _surface_bank_notice(st: dict) -> None:
+    """Если при входе банк показал окно — переслать его админу (один раз на уникальный текст).
+
+    Скриншот+текст собирает bank_scraper в LAST_NOTICE; здесь дедуп по тексту через
+    state["seen_bank_notices"], чтобы одно и то же объявление не слалось каждый прогон.
+    """
+    notice = getattr(bank_scraper, "LAST_NOTICE", None)
+    if not notice:
+        return
+
+    text = (notice.get("text") or "").strip()
+    key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16] if text else "bank-notice-no-text"
+
+    seen = st.setdefault("seen_bank_notices", [])
+    if key in seen:
+        log.info("Bank notice already sent earlier (key=%s) — skip", key)
+        return
+
+    caption = (
+        "🔔 <b>Банк показал окно при входе</b>\n"
+        "Бот закрыл его, чтобы продолжить работу. Проверь — вдруг важное 👇"
+    )
+    if text:
+        caption += f"\n\n{text[:900]}"
+
+    sent = False
+    shot = notice.get("screenshot")
+    if shot:
+        sent, _ = telegram_io.send_photo_to_admin(shot, caption)
+    if not sent:
+        telegram_io.send_to_admin(caption, with_keyboard=True)
+
+    seen.append(key)
+    st["seen_bank_notices"] = seen[-50:]
+    log.info("Bank notice forwarded to admin (key=%s)", key)
+
+
 async def do_bank_check(st: dict) -> str:
     try:
         transactions = await fetch_incoming_transactions(days_back=3)
     except Exception as exc:
         log.exception("Bank scrape failed")
+        _surface_bank_notice(st)  # окно могло всплыть до сбоя — не теряем его
         telegram_io.send_to_admin(
             f"❌ <b>Ошибка при обращении к банку</b>\n<code>{exc}</code>",
             with_keyboard=True,
         )
         return f"ошибка: {exc}"
+
+    _surface_bank_notice(st)
 
     # ВАЖНО: дедуплицируем по стабильному ключу (УНП + № документа + дата + сумма),
     # потому что Id в банке меняется между стадиями обработки платежа.

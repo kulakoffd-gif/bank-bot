@@ -34,6 +34,10 @@ def main() -> int:
     merged["seen_transactions"] = sorted(
         set(remote.get("seen_transactions", [])) | set(local.get("seen_transactions", []))
     )
+    # UNION, чтобы уже отправленное окно банка не ушло повторно после гонки
+    merged["seen_bank_notices"] = sorted(
+        set(remote.get("seen_bank_notices", [])) | set(local.get("seen_bank_notices", []))
+    )
     merged["last_telegram_update_id"] = max(
         remote.get("last_telegram_update_id", 0) or 0,
         local.get("last_telegram_update_id", 0) or 0,
