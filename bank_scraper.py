@@ -147,24 +147,45 @@ async def fetch_incoming_transactions(days_back: int = 3) -> list[Transaction]:
     password = os.environ["BANK_PASSWORD"]
     iban = os.environ.get("BANK_ACCOUNT_IBAN", "")
 
+    # Банк периодически «залипает» на входе (форма отправлена, но страница не
+    # уходит) — разовый сбой на стороне банка. Делаем несколько попыток с чистой
+    # сессией, прежде чем сдаваться, чтобы такие разовые сбои не доходили до админа.
+    global LAST_NOTICE
+    LAST_NOTICE = None
+    attempts = int(os.environ.get("BANK_LOGIN_ATTEMPTS", "3"))
+    last_exc: Exception | None = None
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        # Банк с 2026-06-30 требует местоположение при входе — выдаём браузеру
-        # разрешение на геолокацию и координаты Минска, чтобы сайт не блокировал
-        # форму логина в ожидании доступа к геопозиции.
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            locale="ru-RU",
-            timezone_id="Europe/Minsk",
-            geolocation={"latitude": 53.9006, "longitude": 27.5590},  # Минск
-            permissions=["geolocation"],
-        )
-        page = await context.new_page()
-        try:
-            return await _do_scrape(page, login, password, iban, days_back)
-        finally:
-            await context.close()
-            await browser.close()
+        for attempt in range(1, attempts + 1):
+            browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            # Банк с 2026-06-30 требует местоположение при входе — выдаём браузеру
+            # разрешение на геолокацию и координаты Минска, чтобы сайт не блокировал
+            # форму логина в ожидании доступа к геопозиции.
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                locale="ru-RU",
+                timezone_id="Europe/Minsk",
+                geolocation={"latitude": 53.9006, "longitude": 27.5590},  # Минск
+                permissions=["geolocation"],
+            )
+            page = await context.new_page()
+            try:
+                result = await _do_scrape(page, login, password, iban, days_back)
+                if attempt > 1:
+                    log.info("Scrape succeeded on attempt %d/%d", attempt, attempts)
+                return result
+            except Exception as exc:
+                last_exc = exc
+                log.warning("Scrape attempt %d/%d failed: %s", attempt, attempts, exc)
+            finally:
+                await context.close()
+                await browser.close()
+            if attempt < attempts:
+                await asyncio.sleep(5)
+
+    # Все попытки исчерпаны — пробрасываем последнюю ошибку (её увидит check.py и
+    # уведомит админа).
+    raise last_exc if last_exc else RuntimeError("Bank scrape failed (no attempts run)")
 
 
 async def _do_scrape(page, login, password, iban, days_back):
