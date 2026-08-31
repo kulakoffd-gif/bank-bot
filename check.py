@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 def format_payment(tx: Transaction, routing_info: str = "") -> str:
     body = (
         "💰 <b>Новое поступление</b>\n\n"
-        f"<b>Сумма:</b> {tx.amount} {tx.currency}\n"
+        f"<b>Сумма:</b> {tx.amount.replace('.', ',')} {tx.currency}\n"
         f"<b>Дата:</b> {tx.booking_date}\n"
         f"<b>От:</b> {tx.counterparty}\n"
         f"<b>Назначение:</b> {tx.purpose}"
@@ -554,7 +554,7 @@ async def show_last_payments():
     blocks = [header]
     for t in recent:
         blocks.append(
-            f"📅 <b>{t.booking_date}</b>   💰 <b>{t.amount} {t.currency}</b>\n"
+            f"📅 <b>{t.booking_date}</b>   💰 <b>{t.amount.replace('.', ',')} {t.currency}</b>\n"
             f"<b>От:</b> {t.counterparty}\n"
             f"<i>{t.purpose[:200]}</i>"
         )
