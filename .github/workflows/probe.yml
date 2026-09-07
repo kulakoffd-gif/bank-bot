@@ -1,0 +1,45 @@
+name: Probe accounts (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium
+      - if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium --with-deps
+      - if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: python -m playwright install-deps chromium
+      - name: Run probe
+        env:
+          BANK_LOGIN:        ${{ secrets.BANK_LOGIN }}
+          BANK_PASSWORD:     ${{ secrets.BANK_PASSWORD }}
+          BANK_ACCOUNT_IBAN: ${{ secrets.BANK_ACCOUNT_IBAN }}
+        run: python probe_accounts.py
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-accounts
+          path: |
+            /tmp/probe_*.json
+            /tmp/probe_index.txt
+            /tmp/accounts_page.html
+            /tmp/accounts_page.png
+            /tmp/accounts_text.txt
+          if-no-files-found: ignore
+          retention-days: 5
