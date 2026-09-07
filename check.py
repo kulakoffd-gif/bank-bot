@@ -11,7 +11,7 @@ import amo_client
 import bank_scraper
 import state
 import telegram_io
-from bank_scraper import fetch_incoming_transactions, Transaction
+from bank_scraper import fetch_incoming_transactions, fetch_account_balances, Transaction
 
 # Минимальный интервал между обращениями к банку (минут)
 BANK_CHECK_INTERVAL_MIN = 14
@@ -224,6 +224,10 @@ def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) ->
         elif cmd == "/last":
             pending["show_last"] = True
             telegram_io.send_to_admin("⏳ Загружаю выписку за последние 30 дней…")
+
+        elif cmd == "/balances":
+            pending["show_balances"] = True
+            telegram_io.send_to_admin("⏳ Загружаю остатки по счетам…")
 
         elif cmd in ("/pause", "/stop"):
             if st["is_paused"]:
@@ -566,6 +570,54 @@ async def show_last_payments():
         telegram_io.send_to_admin(full[i:i + chunk_size], with_keyboard=is_last)
 
 
+# ─────────────────────── /balances  «Остатки» ──────────────────────
+
+def _fmt_money(value) -> str:
+    """'600000.00' → '600 000,00' (пробел — тысячи, запятая — дробная часть)."""
+    try:
+        v = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return str(value)
+    neg = v < 0
+    whole, frac = f"{abs(v):,.2f}".split(".")   # '600,000.00'
+    whole = whole.replace(",", " ")              # '600 000'
+    return f"{'-' if neg else ''}{whole},{frac}"
+
+
+def _acc_order(t: str) -> int:
+    if t.startswith("Текущий"):
+        return 0
+    if t.startswith("Вклад"):
+        return 1
+    return 2
+
+
+def format_balances(accounts: list[dict]) -> str:
+    if not accounts:
+        return "Активных счетов не найдено."
+    lines = ["<b>💼 Остатки по счетам</b>"]
+    last_type = None
+    for a in sorted(accounts, key=lambda a: (_acc_order(a["type"]), a["currency"])):
+        if a["type"] != last_type:
+            lines.append(f"\n<b>{a['type']}</b>")
+            last_type = a["type"]
+        lines.append(f"  • <b>{_fmt_money(a['balance'])} {a['currency']}</b>")
+    return "\n".join(lines)
+
+
+async def show_balances():
+    try:
+        accounts = await fetch_account_balances()
+    except Exception as exc:
+        log.exception("/balances failed")
+        telegram_io.send_to_admin(
+            f"❌ <b>Не удалось загрузить остатки</b>\n<code>{exc}</code>",
+            with_keyboard=True,
+        )
+        return
+    telegram_io.send_to_admin(format_balances(accounts), with_keyboard=True)
+
+
 # ────────────────────────────────── MAIN ──────────────────────────────────
 
 async def main() -> int:
@@ -603,6 +655,9 @@ async def main() -> int:
 
     if pending.get("show_last"):
         await show_last_payments()
+
+    if pending.get("show_balances"):
+        await show_balances()
 
     state.save(st)
     log.info("Done. Result: %s", st["last_check_result"])

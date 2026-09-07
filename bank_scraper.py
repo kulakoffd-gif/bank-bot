@@ -404,3 +404,115 @@ async def _do_scrape(page, login, password, iban, days_back):
         log.info("  %s | %s %s | %s",
                  tx.booking_date, tx.amount, tx.currency, tx.counterparty[:40])
     return incoming
+
+
+# ─────────────────────── ОСТАТКИ ПО СЧЕТАМ ───────────────────────
+# Кнопка «Остатки»: логинимся, открываем «Счета», перехватываем ответ
+# /ibservices/account/getAccountList (в нём массив accountsGrid со всеми счетами).
+# Кредитные счета и закрытые — не показываем.
+
+def _parse_accounts(data: dict) -> list[dict]:
+    """Из ответа getAccountList достаём активные НЕкредитные счета."""
+    rows = data.get("accountsGrid") or []
+    out = []
+    for r in rows:
+        if r.get("isAccountClosed"):
+            continue
+        tname = (r.get("accountTypeName") or "").strip()
+        if "редит" in tname:  # «Кредитный» — по просьбе не показываем
+            continue
+        out.append({
+            "type": tname,
+            "currency": (r.get("accountCurrency") or "").strip(),
+            "balance": r.get("balance"),
+            "number": str(r.get("accountNumber") or ""),
+        })
+    return out
+
+
+async def _login_only(page, login, password) -> None:
+    """Логин на dcsc.belarusbank.by (без чтения выписки). Бросает исключение при сбое."""
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
+    await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=20_000)
+    await asyncio.sleep(2)
+    await page.fill(SEL_LOGIN_INPUT, login)
+    await page.fill(SEL_PASSWORD_INPUT, password)
+    await page.click(SEL_SUBMIT_BTN)
+    try:
+        await page.wait_for_function(
+            "() => !window.location.pathname.startsWith('/auth')", timeout=30_000)
+    except PlaywrightTimeout:
+        await _dump_debug(page, "login_submit_fail")
+        raise RuntimeError("Login failed — did not leave /auth")
+    await asyncio.sleep(5)
+    # закрыть возможную модалку (не трогаем LAST_NOTICE — это делает платёжный поток)
+    for label in _MODAL_CLOSE_LABELS:
+        try:
+            btn = page.get_by_role("button", name=label, exact=True).first
+            if await btn.is_visible(timeout=1000):
+                await btn.click()
+                await asyncio.sleep(2)
+                break
+        except Exception:
+            continue
+
+
+async def fetch_account_balances() -> list[dict]:
+    """Вернуть активные НЕкредитные счета с остатками (для кнопки «Остатки»)."""
+    login = os.environ["BANK_LOGIN"]
+    password = os.environ["BANK_PASSWORD"]
+    attempts = int(os.environ.get("BANK_LOGIN_ATTEMPTS", "3"))
+    last_exc: Exception | None = None
+
+    async with async_playwright() as pw:
+        for attempt in range(1, attempts + 1):
+            browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                locale="ru-RU",
+                timezone_id="Europe/Minsk",
+                geolocation={"latitude": 53.9006, "longitude": 27.5590},
+                permissions=["geolocation"],
+            )
+            page = await context.new_page()
+            captured: list[str] = []
+
+            async def on_response(resp):
+                if "/ibservices/account/getAccountList" in resp.url and resp.status == 200:
+                    try:
+                        captured.append(await resp.text())
+                    except Exception:
+                        pass
+
+            page.on("response", lambda r: asyncio.create_task(on_response(r)))
+
+            try:
+                await _login_only(page, login, password)
+                # «Счета» инициирует getAccountList
+                try:
+                    await page.get_by_text("Счета", exact=True).first.click(timeout=10_000)
+                except Exception:
+                    pass
+                # ждём захвата ответа
+                for _ in range(20):
+                    if captured:
+                        break
+                    await asyncio.sleep(1)
+                if not captured:
+                    raise RuntimeError("getAccountList не перехвачен")
+                data = json.loads(max(captured, key=len))
+                accounts = _parse_accounts(data)
+                log.info("Balances: %d активных НЕкредитных счетов", len(accounts))
+                if attempt > 1:
+                    log.info("Balances succeeded on attempt %d/%d", attempt, attempts)
+                return accounts
+            except Exception as exc:
+                last_exc = exc
+                log.warning("Balances attempt %d/%d failed: %s", attempt, attempts, exc)
+            finally:
+                await context.close()
+                await browser.close()
+            if attempt < attempts:
+                await asyncio.sleep(5)
+
+    raise last_exc if last_exc else RuntimeError("fetch_account_balances failed")
