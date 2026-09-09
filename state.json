@@ -437,8 +437,8 @@
   ],
   "last_telegram_update_id": 673453987,
   "is_paused": false,
-  "last_check_at": "2026-09-09T10:51:56.305711+00:00",
-  "last_check_result": "новых поступлений: 1",
+  "last_check_at": "2026-09-09T11:21:52.690823+00:00",
+  "last_check_result": "новых поступлений: 0",
   "recipients": [],
   "manager_routing": {
     "11527566": 1790457718,
