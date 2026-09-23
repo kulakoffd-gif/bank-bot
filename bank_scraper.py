@@ -36,72 +36,58 @@ class Transaction:
     purpose: str
 
 
-# Заполняется _handle_post_login_modal, читается check.py:
+# Заполняется _screenshot_and_flag_modal, читается check.py:
 #   None — окна не было; иначе {"text": str, "screenshot": "/tmp/bank_notice.png"|""}
 LAST_NOTICE: dict | None = None
 
-# Кнопки, которыми безопасно ЗАКРЫТЬ окно банка (не «Прочитать»/«Изменить» —
-# они могут увести на другой экран).
-_MODAL_CLOSE_LABELS = ["Пропустить", "Продолжить", "Закрыть", "Позже", "ОК", "Понятно", "Ознакомлен"]
+class ModalBlockingError(Exception):
+    """Банк показал окно при входе, перекрывающее интерфейс.
 
-
-async def _handle_post_login_modal(page) -> dict | None:
-    """Если после входа появилось окно банка — снять скриншот+текст и закрыть его.
-
-    Возвращает {"text", "screenshot"} если окно было, иначе None.
-    Сам скриншот/текст НЕ отправляет — это делает check.py (там дедуп по тексту,
-    чтобы не слать одно и то же объявление каждый прогон).
+    Бот НЕ закрывает такое окно (там может быть важная информация или согласие,
+    которое должен дать сам человек) — вместо этого делает скриншот и уведомляет
+    ТОЛЬКО админа, а тот заходит, читает и закрывает окно сам. После этого банк
+    помечает окно прочитанным для счёта, и следующий прогон входит без окна.
     """
-    # Ищем текст окна: находим видимую кнопку-«закрыть» и поднимаемся к контейнеру-модалке.
+
+
+async def _screenshot_and_flag_modal(page) -> None:
+    """Если после входа открыт диалог банка (окно поверх интерфейса) — снять
+    скриншот, положить его в LAST_NOTICE и бросить ModalBlockingError. Ничего НЕ
+    закрывает и не нажимает.
+
+    Детект по СТРУКТУРЕ (Angular CDK: класс `cdk-global-scrollblock` на <html>,
+    контейнер `cdk-dialog-container`/`[role=dialog]`, тёмная подложка
+    `cdk-overlay-backdrop-showing`), а не по тексту кнопки — ловит любое окно банка.
+    """
     try:
-        info = await page.evaluate(
-            """(labels) => {
-                const btns = [...document.querySelectorAll('button, [role=button]')];
-                let target = null;
-                for (const b of btns) {
-                    const t = (b.innerText || '').trim();
-                    if (labels.includes(t) && b.offsetParent !== null) { target = b; break; }
-                }
-                if (!target) return null;
-                let el = target;
-                for (let i = 0; i < 8 && el; i++) {
-                    const cls = (el.className || '') + '';
-                    const role = el.getAttribute && el.getAttribute('role');
-                    if (role === 'dialog' || /modal|dialog|popup/i.test(cls)) break;
-                    el = el.parentElement;
-                }
-                const box = el || target.closest('div');
-                return { text: (box ? box.innerText : '').trim().slice(0, 1500) };
-            }""",
-            _MODAL_CLOSE_LABELS,
-        )
+        info = await page.evaluate("""() => {
+            // Реальное модальное окно банка = контейнер диалога поверх интерфейса.
+            // Требуем именно диалог (не любой оверлей вроде подсказки/выпадашки),
+            // чтобы не сработать ложно на обычном дашборде.
+            const dlg = document.querySelector('cdk-dialog-container, .cdk-overlay-container [role="dialog"]');
+            if (!dlg) return null;
+            const r = dlg.getBoundingClientRect && dlg.getBoundingClientRect();
+            if (r && (r.width === 0 || r.height === 0)) return null;  // невидимый
+            return { text: (dlg.innerText || '').trim().slice(0, 1500) };
+        }""")
     except Exception as e:
         log.warning("Modal detection failed: %s", e)
-        return None
+        return
 
     if not info:
-        return None  # окна нет — обычный вход
+        return  # окна нет — обычный вход
 
-    notice = {"text": info.get("text", ""), "screenshot": "/tmp/bank_notice.png"}
-    log.info("Post-login modal detected (%d chars of text) — screenshotting", len(notice["text"]))
+    global LAST_NOTICE
+    shot = "/tmp/bank_notice.png"
+    log.warning("Blocking bank modal at login (%d chars) — screenshot + notify admin, NOT closing",
+                len(info.get("text", "")))
     try:
-        await page.screenshot(path=notice["screenshot"], full_page=True)
+        await page.screenshot(path=shot, full_page=True)
     except Exception as e:
         log.warning("Could not screenshot modal: %s", e)
-        notice["screenshot"] = ""
-
-    # Закрываем окно, чтобы продолжить к «Счета».
-    for label in _MODAL_CLOSE_LABELS:
-        try:
-            btn = page.get_by_role("button", name=label, exact=True).first
-            if await btn.is_visible(timeout=1000):
-                await btn.click()
-                log.info("Closed post-login modal via '%s'", label)
-                await asyncio.sleep(2)
-                break
-        except Exception:
-            continue
-    return notice
+        shot = ""
+    LAST_NOTICE = {"text": info.get("text", ""), "screenshot": shot}
+    raise ModalBlockingError("Окно банка при входе требует участия пользователя")
 
 
 async def _dump_debug(page, tag: str) -> None:
@@ -174,6 +160,8 @@ async def fetch_incoming_transactions(days_back: int = 3) -> list[Transaction]:
                 if attempt > 1:
                     log.info("Scrape succeeded on attempt %d/%d", attempt, attempts)
                 return result
+            except ModalBlockingError:
+                raise  # окно висит — ретраить бесполезно, нужен пользователь
             except Exception as exc:
                 last_exc = exc
                 log.warning("Scrape attempt %d/%d failed: %s", attempt, attempts, exc)
@@ -221,13 +209,13 @@ async def _do_scrape(page, login, password, iban, days_back):
     log.info("Logged in, URL=%s", page.url)
     await asyncio.sleep(5)
 
-    # === МОДАЛКА ПОСЛЕ ВХОДА: заснять → сообщить → закрыть ===
-    # Банк периодически показывает окно (объявления о тарифах, «Пароль истекает»
-    # и т.п.), которое перекрывает меню и ломает клик по «Счета». Прежде чем
-    # закрыть — снимаем скриншот и текст, чтобы админ не пропустил важное.
-    # Результат кладём в модульную LAST_NOTICE, дедуп/отправку делает check.py.
-    global LAST_NOTICE
-    LAST_NOTICE = await _handle_post_login_modal(page)
+    # === ОКНО ПОСЛЕ ВХОДА: заснять → уведомить только админа → НЕ закрывать ===
+    # Банк периодически показывает окно (объявления, согласия и т.п.), которое
+    # перекрывает меню и ломает клик по «Счета». Бот его НЕ закрывает (там может
+    # быть важное) — снимает скриншот, кладёт в LAST_NOTICE и бросает
+    # ModalBlockingError. check.py уведомит админа. Пользователь читает и закрывает
+    # окно сам, после чего следующий прогон входит без окна.
+    await _screenshot_and_flag_modal(page)
 
     # === ПЕРЕХВАТЧИК ОТВЕТА getAccountStatement ===
     statement_responses: list[dict] = []
@@ -445,16 +433,9 @@ async def _login_only(page, login, password) -> None:
         await _dump_debug(page, "login_submit_fail")
         raise RuntimeError("Login failed — did not leave /auth")
     await asyncio.sleep(5)
-    # закрыть возможную модалку (не трогаем LAST_NOTICE — это делает платёжный поток)
-    for label in _MODAL_CLOSE_LABELS:
-        try:
-            btn = page.get_by_role("button", name=label, exact=True).first
-            if await btn.is_visible(timeout=1000):
-                await btn.click()
-                await asyncio.sleep(2)
-                break
-        except Exception:
-            continue
+    # Окно банка НЕ закрываем — если оно есть, снимаем скриншот, уведомляем админа
+    # и прекращаем (ModalBlockingError). Пользователь закроет сам.
+    await _screenshot_and_flag_modal(page)
 
 
 async def fetch_account_balances() -> list[dict]:
@@ -506,6 +487,8 @@ async def fetch_account_balances() -> list[dict]:
                 if attempt > 1:
                     log.info("Balances succeeded on attempt %d/%d", attempt, attempts)
                 return accounts
+            except ModalBlockingError:
+                raise  # окно висит — ретраить бесполезно, нужен пользователь
             except Exception as exc:
                 last_exc = exc
                 log.warning("Balances attempt %d/%d failed: %s", attempt, attempts, exc)

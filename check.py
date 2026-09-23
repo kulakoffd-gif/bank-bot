@@ -424,48 +424,57 @@ def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) ->
 # ────────────────────────────── ПРОВЕРКА БАНКА ──────────────────────────
 
 def _surface_bank_notice(st: dict) -> None:
-    """Если при входе банк показал окно — переслать его админу (один раз на уникальный текст).
+    """Банк показал блокирующее окно при входе — прислать ТОЛЬКО админу скриншот
+    и просьбу закрыть окно самому. Бот окно НЕ закрывает.
 
-    Скриншот+текст собирает bank_scraper в LAST_NOTICE; здесь дедуп по тексту через
-    state["seen_bank_notices"], чтобы одно и то же объявление не слалось каждый прогон.
+    Скриншот+текст собирает bank_scraper в LAST_NOTICE. Дедуп по тексту через
+    state["seen_bank_notices"], чтобы одно и то же окно не слалось каждый прогон.
+    Ключ помечаем отправленным только при успешной отправке.
     """
     notice = getattr(bank_scraper, "LAST_NOTICE", None)
     if not notice:
         return
 
     text = (notice.get("text") or "").strip()
-    key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16] if text else "bank-notice-no-text"
+    key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16] if text else "bank-modal-no-text"
 
     seen = st.setdefault("seen_bank_notices", [])
     if key in seen:
-        log.info("Bank notice already sent earlier (key=%s) — skip", key)
+        log.info("Bank modal already reported earlier (key=%s) — skip", key)
         return
 
     caption = (
-        "🔔 <b>Банк показал окно при входе</b>\n"
-        "Бот закрыл его, чтобы продолжить работу. Проверь — вдруг важное 👇"
+        "⚠️ <b>Банк показал окно при входе — оно блокирует бота</b>\n"
+        "Бот его НЕ закрывает (вдруг там важное). Зайди в интернет-банк, прочитай "
+        "и закрой окно сам. Как закроешь — бот продолжит со следующего прогона и "
+        "подтянет платежи за последние дни."
     )
     if text:
-        caption += f"\n\n{text[:900]}"
+        caption += f"\n\n<i>{text[:700]}</i>"
 
-    sent = False
     shot = notice.get("screenshot")
     if shot:
         sent, _ = telegram_io.send_photo_to_admin(shot, caption)
-    if not sent:
-        telegram_io.send_to_admin(caption, with_keyboard=True)
+    else:
+        sent, _ = telegram_io._post(telegram_io.ADMIN_CHAT_ID, caption, with_keyboard=True)
 
-    seen.append(key)
-    st["seen_bank_notices"] = seen[-50:]
-    log.info("Bank notice forwarded to admin (key=%s)", key)
+    if sent:
+        seen.append(key)
+        st["seen_bank_notices"] = seen[-50:]
+        log.info("Bank modal reported to admin (key=%s)", key)
+    else:
+        log.warning("Failed to report bank modal to admin (key=%s) — will retry next run", key)
 
 
 async def do_bank_check(st: dict) -> str:
     try:
         transactions = await fetch_incoming_transactions(days_back=3)
+    except bank_scraper.ModalBlockingError:
+        # Банк показал окно, требующее участия человека — шлём админу скрин, не спамим.
+        _surface_bank_notice(st)
+        return "окно банка ждёт тебя (скрин отправлен)"
     except Exception as exc:
         log.exception("Bank scrape failed")
-        _surface_bank_notice(st)  # окно могло всплыть до сбоя — не теряем его
         telegram_io.send_to_admin(
             f"❌ <b>Ошибка при обращении к банку</b>\n<code>{exc}</code>",
             with_keyboard=True,
@@ -605,9 +614,17 @@ def format_balances(accounts: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def show_balances():
+async def show_balances(st: dict):
     try:
         accounts = await fetch_account_balances()
+    except bank_scraper.ModalBlockingError:
+        _surface_bank_notice(st)
+        telegram_io.send_to_admin(
+            "⚠️ Не могу показать остатки — при входе висит окно банка. "
+            "Закрой его в интернет-банке (см. сообщение выше) и повтори.",
+            with_keyboard=True,
+        )
+        return
     except Exception as exc:
         log.exception("/balances failed")
         telegram_io.send_to_admin(
@@ -657,7 +674,7 @@ async def main() -> int:
         await show_last_payments()
 
     if pending.get("show_balances"):
-        await show_balances()
+        await show_balances(st)
 
     state.save(st)
     log.info("Done. Result: %s", st["last_check_result"])
