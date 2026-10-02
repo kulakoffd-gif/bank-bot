@@ -137,6 +137,8 @@ WELCOME_TEXT = (
     "📋 <b>Последние платежи</b> — выписка за 30 дней\n"
     "📊 <b>Статус</b> — что сейчас с ботом\n"
     "👥 <b>Получатели</b> — кто получает уведомления + инструкции\n"
+    "💼 <b>Остатки</b> — остатки по всем активным счетам\n"
+    "🔑 <b>Смена пароля</b> — памятка, как сменить пароль банка и прописать его боту\n"
     "⏸ <b>Пауза</b> / ▶️ <b>Возобновить</b> — управление автопроверкой\n"
     "❓ <b>Помощь</b> — это сообщение\n\n"
     "<b>Команды для управления получателями:</b>\n"
@@ -253,6 +255,9 @@ def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) ->
 
         elif cmd == "/recipients":
             telegram_io.send_to_admin(format_recipients_help(st), with_keyboard=True)
+
+        elif cmd == "/password":
+            telegram_io.send_to_admin(PASSWORD_MEMO, with_keyboard=True)
 
         elif cmd == "/managers":
             telegram_io.send_to_admin(format_managers_help(st), with_keyboard=True)
@@ -423,6 +428,22 @@ def handle_commands(commands: list[tuple[str, str]], st: dict, pending: dict) ->
 
 # ────────────────────────────── ПРОВЕРКА БАНКА ──────────────────────────
 
+# Памятка о смене пароля — показывается по кнопке «🔑 Смена пароля» и автоматически,
+# когда банк написал что-то про пароль (истечение / остаток попыток).
+PASSWORD_MEMO = (
+    "🔑 <b>Смена пароля в банке</b>\n\n"
+    "Банк заставляет менять пароль периодически (примерно раз в 3 месяца). "
+    "Сменить можно и досрочно (например, если подозреваешь, что пароль скомпрометирован).\n\n"
+    "<b>1) В банке</b> — зайди: https://dcsc.belarusbank.by/auth\n"
+    "При истечении банк сам покажет окно «Пароль просрочен» → нажми «Изменить» и задай новый. "
+    "Досрочно — смени пароль в настройках личного кабинета.\n\n"
+    "<b>2) Пропиши новый пароль боту</b> (обязательно, иначе бот не сможет войти):\n"
+    "https://github.com/kulakoffd-gif/bank-bot/settings/secrets/actions\n"
+    "→ открой <b>BANK_PASSWORD</b> → карандаш (Update) → вставь новый пароль → Update secret.\n\n"
+    "После этого бот снова входит сам. Логин и прочее не трогай — меняется только пароль."
+)
+
+
 def _surface_bank_notice(st: dict) -> None:
     """Банк показал блокирующее окно при входе — прислать ТОЛЬКО админу скриншот
     и просьбу закрыть окно самому. Бот окно НЕ закрывает.
@@ -443,20 +464,38 @@ def _surface_bank_notice(st: dict) -> None:
         log.info("Bank modal already reported earlier (key=%s) — skip", key)
         return
 
-    caption = (
-        "⚠️ <b>Банк показал окно при входе — оно блокирует бота</b>\n"
-        "Бот его НЕ закрывает (вдруг там важное). Зайди в интернет-банк, прочитай "
-        "и закрой окно сам. Как закроешь — бот продолжит со следующего прогона и "
-        "подтянет платежи за последние дни."
-    )
-    if text:
-        caption += f"\n\n<i>{text[:700]}</i>"
-
     shot = notice.get("screenshot")
-    if shot:
-        sent, _ = telegram_io.send_photo_to_admin(shot, caption)
+
+    if notice.get("password"):
+        # Сообщение про пароль: короткий алерт + скрин, затем ПОЛНАЯ памятка отдельным
+        # сообщением (чтобы ссылки не обрезались лимитом подписи к фото).
+        alert = (
+            "🔑 <b>Банк написал что-то про ПАРОЛЬ</b> — похоже, пора менять.\n"
+            "⚠️ Важно: бот сам тратит попытки входа старым паролем, а ты их не видишь. "
+            "Разберись сейчас, памятка ниже 👇"
+        )
+        if text:
+            alert += f"\n\n<i>Текст от банка: {text[:400]}</i>"
+        ok1 = False
+        if shot:
+            ok1, _ = telegram_io.send_photo_to_admin(shot, alert)
+        if not ok1:
+            ok1, _ = telegram_io._post(telegram_io.ADMIN_CHAT_ID, alert, with_keyboard=False)
+        ok2, _ = telegram_io._post(telegram_io.ADMIN_CHAT_ID, PASSWORD_MEMO, with_keyboard=True)
+        sent = ok1 or ok2
     else:
-        sent, _ = telegram_io._post(telegram_io.ADMIN_CHAT_ID, caption, with_keyboard=True)
+        caption = (
+            "⚠️ <b>Банк показал окно при входе — оно блокирует бота</b>\n"
+            "Бот его НЕ закрывает (вдруг там важное). Зайди в интернет-банк, прочитай "
+            "и закрой окно сам. Как закроешь — бот продолжит со следующего прогона и "
+            "подтянет платежи за последние дни."
+        )
+        if text:
+            caption += f"\n\n<i>{text[:700]}</i>"
+        if shot:
+            sent, _ = telegram_io.send_photo_to_admin(shot, caption)
+        else:
+            sent, _ = telegram_io._post(telegram_io.ADMIN_CHAT_ID, caption, with_keyboard=True)
 
     if sent:
         seen.append(key)

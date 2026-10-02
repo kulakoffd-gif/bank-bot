@@ -50,6 +50,46 @@ class ModalBlockingError(Exception):
     """
 
 
+# Фразы, по которым узнаём, что сообщение банка КАСАЕТСЯ ПАРОЛЯ (истечение,
+# смена, остаток попыток). Подобраны так, чтобы НЕ ловить безобидную сноску на
+# странице входа «Никому не сообщайте код из СМС или свой пароль».
+_PASSWORD_MARKERS = [
+    "пароль просрочен", "пароль истек", "пароль истёк", "пароль устарел",
+    "срок действия пароля", "смените пароль", "сменить пароль", "смена пароля",
+    "измените пароль", "изменить пароль", "необходимо сменить", "требуется смена",
+    "осталось попыток", "попыток входа", "дней до смены", "до смены пароля",
+    "обновите пароль", "обновить пароль",
+]
+
+
+def _looks_like_password(text: str) -> bool:
+    """True, если текст похож на сообщение банка про пароль (истечение/смена/попытки)."""
+    t = (text or "").lower()
+    return any(m in t for m in _PASSWORD_MARKERS)
+
+
+async def _flag_if_password_message(page) -> None:
+    """Если на странице (в т.ч. оставшейся на /auth) есть сообщение про пароль —
+    снять скриншот, пометить LAST_NOTICE как password и бросить ModalBlockingError.
+    Иначе — тихо вернуться (обычная обработка сбоя продолжится)."""
+    try:
+        text = await page.evaluate("() => (document.body && document.body.innerText) || ''")
+    except Exception:
+        return
+    if not _looks_like_password(text):
+        return
+    global LAST_NOTICE
+    shot = "/tmp/bank_notice.png"
+    try:
+        await page.screenshot(path=shot, full_page=True)
+    except Exception:
+        shot = ""
+    # берём кусок текста вокруг маркера для краткости
+    LAST_NOTICE = {"text": (text or "").strip()[:1500], "screenshot": shot, "password": True}
+    log.warning("Password-related bank message detected — notify admin with memo")
+    raise ModalBlockingError("Сообщение банка про пароль — требуется участие пользователя")
+
+
 async def _screenshot_and_flag_modal(page) -> None:
     """Если после входа открыт диалог банка (окно поверх интерфейса) — снять
     скриншот, положить его в LAST_NOTICE и бросить ModalBlockingError. Ничего НЕ
@@ -86,7 +126,8 @@ async def _screenshot_and_flag_modal(page) -> None:
     except Exception as e:
         log.warning("Could not screenshot modal: %s", e)
         shot = ""
-    LAST_NOTICE = {"text": info.get("text", ""), "screenshot": shot}
+    LAST_NOTICE = {"text": info.get("text", ""), "screenshot": shot,
+                   "password": _looks_like_password(info.get("text", ""))}
     raise ModalBlockingError("Окно банка при входе требует участия пользователя")
 
 
@@ -204,6 +245,7 @@ async def _do_scrape(page, login, password, iban, days_back):
         # Сохраняем страницу, чтобы увидеть, что именно показывает банк.
         log.error("Still on /auth after submit — dumping page for diagnosis")
         await _dump_debug(page, "login_submit_fail")
+        await _flag_if_password_message(page)  # если про пароль — памятка админу, без ретраев
         raise RuntimeError("Login failed — did not leave /auth (возможно, новый экран банка после ввода)")
 
     log.info("Logged in, URL=%s", page.url)
@@ -431,6 +473,7 @@ async def _login_only(page, login, password) -> None:
             "() => !window.location.pathname.startsWith('/auth')", timeout=30_000)
     except PlaywrightTimeout:
         await _dump_debug(page, "login_submit_fail")
+        await _flag_if_password_message(page)  # если про пароль — памятка админу, без ретраев
         raise RuntimeError("Login failed — did not leave /auth")
     await asyncio.sleep(5)
     # Окно банка НЕ закрываем — если оно есть, снимаем скриншот, уведомляем админа
