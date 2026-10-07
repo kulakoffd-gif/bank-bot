@@ -570,9 +570,9 @@
     "800008148|3775|2026-10-05|574.20",
     "805004271|337|2026-06-23|3120.00"
   ],
-  "last_telegram_update_id": 673453989,
+  "last_telegram_update_id": 673453991,
   "is_paused": false,
-  "last_check_at": "2026-10-07T11:44:50.691479+00:00",
+  "last_check_at": "2026-10-07T12:07:07.780655+00:00",
   "last_check_result": "новых поступлений: 0",
   "recipients": [],
   "manager_routing": {
