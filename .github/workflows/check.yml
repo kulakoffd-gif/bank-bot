@@ -71,14 +71,16 @@ jobs:
 
       - name: Upload debug HTML (statements page)
         if: always()
+        continue-on-error: true   # не ронять прогон и не блокировать коммит state, если заливка не удалась
         uses: actions/upload-artifact@v4
         with:
           name: statements-debug
+          # Только наши диагностические файлы — чтобы zip не цеплял чужие файлы в /tmp
+          # (из-за них был EACCES: permission denied, и весь прогон падал красным).
           path: |
-            /tmp/*.html
-            /tmp/*.png
-            /tmp/*.json
-            /tmp/*.txt
+            /tmp/*_fail.html
+            /tmp/*_fail.png
+            /tmp/bank_notice.png
           if-no-files-found: ignore
           retention-days: 5
 
