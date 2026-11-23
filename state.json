@@ -739,8 +739,8 @@
   ],
   "last_telegram_update_id": 673453993,
   "is_paused": false,
-  "last_check_at": "2026-11-23T10:22:04.884774+00:00",
-  "last_check_result": "новых поступлений: 1",
+  "last_check_at": "2026-11-23T10:52:11.669554+00:00",
+  "last_check_result": "новых поступлений: 0",
   "recipients": [],
   "manager_routing": {
     "11527566": 1790457718,
